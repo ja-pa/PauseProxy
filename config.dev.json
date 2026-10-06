@@ -1,0 +1,21 @@
+{
+  "proxy_addr": "127.0.0.1:9080",
+  "pac_addr": "127.0.0.1:9082",
+  "admin_addr": "127.0.0.1:9083",
+  "advertised_proxy": "127.0.0.1:9080",
+  "ca_dir": ".local/ca",
+  "sites_file": ".local/sites.json",
+  "timezone": "Europe/Prague",
+  "hosts": [
+    "x.com"
+  ],
+  "users": {
+    "127.0.0.1": "dev",
+    "::1": "dev"
+  },
+  "daily_limit_seconds": 120,
+  "warning_seconds": 30,
+  "blocked_hours": [],
+  "admin_url": "https://127.0.0.1:9083",
+  "admin_password": ""
+}

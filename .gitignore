@@ -1,0 +1,9 @@
+.tools/
+.local/
+dist/
+*.exe
+*.test
+coverage.out
+config.local.json
+config.*.local.json
+*.pem
