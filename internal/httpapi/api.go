@@ -90,6 +90,13 @@ func (a *API) client(w http.ResponseWriter, r *http.Request, user, ip string, pu
 		return
 	}
 	switch r.URL.Path {
+	case "/__pauseproxy/grayscale.css":
+		if r.Method != "GET" {
+			Error(w, 405, "GET required")
+			return
+		}
+		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+		_, _ = w.Write([]byte("html[data-pauseproxy-grayscale]{filter:grayscale(100%)!important}"))
 	case "/__pauseproxy/client.css":
 		if r.Method != "GET" {
 			Error(w, 405, "GET required")
@@ -181,6 +188,32 @@ func (a *API) client(w http.ResponseWriter, r *http.Request, user, ip string, pu
 		a.diagnosticsMu.Lock()
 		a.diagnostics.Heartbeats++
 		a.diagnosticsMu.Unlock()
+	case "/__pauseproxy/extra-time":
+		if r.Method != "POST" {
+			Error(w, 405, "POST required")
+			return
+		}
+		var b state.ExtraRequest
+		if !decode(w, r, &b) {
+			return
+		}
+		host := config.Host(r.Host)
+		if public {
+			host = ""
+		}
+		result, err := a.State.ExtraTime(user, ip, host, b)
+		if err != nil {
+			code := 400
+			if err == state.ErrSession {
+				code = 401
+			}
+			if err == state.ErrExtra {
+				code = 409
+			}
+			Error(w, code, err.Error())
+			return
+		}
+		JSON(w, 200, result)
 	case "/__pauseproxy/status":
 		if r.Method != "GET" {
 			Error(w, 405, "GET required")
@@ -244,6 +277,12 @@ func (a *API) Public(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch r.URL.Path {
+	case "/mvp.css":
+		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+		_, _ = w.Write(web.MVPCSS)
+	case "/app.css":
+		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+		_, _ = w.Write(web.AppCSS)
 	case "/proxy.pac":
 		w.Header().Set("Content-Type", "application/x-ns-proxy-autoconfig")
 		_, _ = io.WriteString(w, a.PAC())
@@ -275,6 +314,15 @@ func (a *API) Admin(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if r.Method == "GET" && (r.URL.Path == "/mvp.css" || r.URL.Path == "/app.css") {
+		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+		if r.URL.Path == "/mvp.css" {
+			_, _ = w.Write(web.MVPCSS)
+		} else {
+			_, _ = w.Write(web.AppCSS)
+		}
+		return
+	}
 	if r.URL.Path == "/" && r.Method == "GET" {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write(web.Admin)
@@ -309,6 +357,45 @@ func (a *API) Admin(w http.ResponseWriter, r *http.Request) {
 		}{a.State.Snapshot(), a.Diagnostics()})
 	case r.URL.Path == "/api/sites" && r.Method == "GET":
 		JSON(w, 200, a.Rules())
+	case r.URL.Path == "/api/groups" && r.Method == "POST":
+		var b struct {
+			Name    string `json:"name"`
+			Seconds int    `json:"daily_limit_seconds"`
+		}
+		if !decode(w, r, &b) {
+			return
+		}
+		id := state.Token()
+		a.change(w, func(d *sites.Document) error {
+			d.Groups = append(d.Groups, sites.Group{ID: id, Name: b.Name, Seconds: b.Seconds})
+			return nil
+		})
+	case strings.HasPrefix(r.URL.Path, "/api/groups/") && (r.Method == "PATCH" || r.Method == "DELETE"):
+		id := strings.TrimPrefix(r.URL.Path, "/api/groups/")
+		var b struct {
+			Name    *string `json:"name"`
+			Seconds *int    `json:"daily_limit_seconds"`
+		}
+		if r.Method == "PATCH" && !decode(w, r, &b) {
+			return
+		}
+		a.change(w, func(d *sites.Document) error {
+			if r.Method == "DELETE" {
+				return d.RemoveGroup(id)
+			}
+			for i := range d.Groups {
+				if d.Groups[i].ID == id {
+					if b.Name != nil {
+						d.Groups[i].Name = *b.Name
+					}
+					if b.Seconds != nil {
+						d.Groups[i].Seconds = *b.Seconds
+					}
+					return nil
+				}
+			}
+			return fmt.Errorf("group does not exist")
+		})
 	case r.URL.Path == "/api/bypass-domains" && r.Method == "GET":
 		JSON(w, 200, map[string]any{"bypass_domains": a.Rules().Bypass})
 	case r.URL.Path == "/api/bypass-domains" && r.Method == "PUT":
@@ -360,11 +447,18 @@ func (a *API) Admin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var b struct {
-			Domains *[]string `json:"domains"`
-			Enabled *bool     `json:"enabled"`
-			Mode    *string   `json:"mode"`
-			Seconds *int      `json:"daily_limit_seconds"`
-			Bypass  *[]string `json:"bypass_domains"`
+			GroupID          *string   `json:"group_id"`
+			BudgetMode       *string   `json:"budget_mode"`
+			Domains          *[]string `json:"domains"`
+			Enabled          *bool     `json:"enabled"`
+			Mode             *string   `json:"mode"`
+			Seconds          *int      `json:"daily_limit_seconds"`
+			GrayscaleEnabled *bool     `json:"grayscale_enabled"`
+			GrayscaleAfter   *int      `json:"grayscale_after_seconds"`
+			ExtraEnabled     *bool     `json:"extra_time_enabled"`
+			ExtraSeconds     *int      `json:"extra_time_seconds"`
+			ExtraMaxUses     *int      `json:"extra_time_max_uses"`
+			Bypass           *[]string `json:"bypass_domains"`
 		}
 		if r.Method == "PATCH" && !decodeLimit(w, r, &b, 65536) {
 			return
@@ -376,6 +470,27 @@ func (a *API) Admin(w http.ResponseWriter, r *http.Request) {
 						d.Sites = append(d.Sites[:i], d.Sites[i+1:]...)
 					} else {
 						v := &d.Sites[i]
+						if b.GroupID != nil {
+							v.GroupID = *b.GroupID
+						}
+						if b.BudgetMode != nil {
+							v.BudgetMode = *b.BudgetMode
+						}
+						if b.GrayscaleEnabled != nil {
+							v.GrayscaleEnabled = *b.GrayscaleEnabled
+						}
+						if b.GrayscaleAfter != nil {
+							v.GrayscaleAfter = *b.GrayscaleAfter
+						}
+						if b.ExtraEnabled != nil {
+							v.ExtraEnabled = *b.ExtraEnabled
+						}
+						if b.ExtraSeconds != nil {
+							v.ExtraSeconds = *b.ExtraSeconds
+						}
+						if b.ExtraMaxUses != nil {
+							v.ExtraMaxUses = *b.ExtraMaxUses
+						}
 						if b.Domains != nil {
 							v.Domains = *b.Domains
 						}

@@ -10,19 +10,73 @@ import (
 	"path/filepath"
 	"pauseproxy/internal/config"
 	"strings"
+	"unicode/utf8"
 )
 
 type Site struct {
-	Domain  string   `json:"domain"`
-	Domains []string `json:"domains"`
-	Enabled bool     `json:"enabled"`
-	Mode    string   `json:"mode"`
-	Seconds int      `json:"daily_limit_seconds"`
+	GroupID          string   `json:"group_id"`
+	BudgetMode       string   `json:"budget_mode"`
+	GrayscaleEnabled bool     `json:"grayscale_enabled"`
+	GrayscaleAfter   int      `json:"grayscale_after_seconds"`
+	ExtraEnabled     bool     `json:"extra_time_enabled"`
+	ExtraSeconds     int      `json:"extra_time_seconds"`
+	ExtraMaxUses     int      `json:"extra_time_max_uses"`
+	Domain           string   `json:"domain"`
+	Domains          []string `json:"domains"`
+	Enabled          bool     `json:"enabled"`
+	Mode             string   `json:"mode"`
+	Seconds          int      `json:"daily_limit_seconds"`
 }
 type Document struct {
+	Groups  []Group  `json:"groups"`
 	Version int      `json:"version"`
 	Sites   []Site   `json:"sites"`
 	Bypass  []string `json:"bypass_domains"`
+}
+
+type Group struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Seconds int    `json:"daily_limit_seconds"`
+}
+
+func (d Document) FindGroup(id string) (Group, bool) {
+	for _, g := range d.Groups {
+		if g.ID == id {
+			return g, true
+		}
+	}
+	return Group{}, false
+}
+
+func (s Site) SharesGroup() bool { return s.GroupID != "" && s.BudgetMode != "independent" }
+
+func (d *Document) RemoveGroup(id string) error {
+	g, ok := d.FindGroup(id)
+	if !ok {
+		return fmt.Errorf("group does not exist")
+	}
+	for i := range d.Sites {
+		s := &d.Sites[i]
+		if s.GroupID != id {
+			continue
+		}
+		if s.BudgetMode == "shared" {
+			s.Seconds = g.Seconds
+			if s.GrayscaleAfter >= s.Seconds {
+				s.GrayscaleEnabled = false
+			}
+		}
+		s.GroupID, s.BudgetMode = "", "independent"
+		// Keep the threshold value for later editing if it no longer fits.
+	}
+	for i, v := range d.Groups {
+		if v.ID == id {
+			d.Groups = append(d.Groups[:i], d.Groups[i+1:]...)
+			break
+		}
+	}
+	return nil
 }
 
 func Domain(input string) (string, error) {
@@ -86,8 +140,34 @@ func (d Document) Find(domain string) (Site, bool) {
 	return Site{}, false
 }
 func (d *Document) Validate() error {
-	if d.Version != 1 || len(d.Sites) > 32 || len(d.Bypass) > 128 {
+	if (d.Version != 1 && d.Version != 2) || len(d.Sites) > 32 || len(d.Bypass) > 128 || len(d.Groups) > 32 {
 		return fmt.Errorf("invalid version or too many rules")
+	}
+	if d.Version == 1 {
+		if len(d.Groups) != 0 {
+			return fmt.Errorf("groups require rules version 2")
+		}
+		for _, s := range d.Sites {
+			if s.GroupID != "" || (s.BudgetMode != "" && s.BudgetMode != "independent") {
+				return fmt.Errorf("groups require rules version 2")
+			}
+		}
+		d.Version = 2
+	}
+	if d.Groups == nil {
+		d.Groups = []Group{}
+	}
+	groupIDs, groupNames := map[string]bool{}, map[string]bool{}
+	for i := range d.Groups {
+		g := &d.Groups[i]
+		g.Name = strings.TrimSpace(g.Name)
+		if g.ID == "" || len(g.ID) > 64 || strings.ContainsAny(g.ID, "/\\ \t\r\n") || g.Name == "" || utf8.RuneCountInString(g.Name) > 100 || strings.ContainsAny(g.Name, "\r\n\t") || g.Seconds < 1 || g.Seconds > 86400 {
+			return fmt.Errorf("invalid group settings")
+		}
+		if groupIDs[g.ID] || groupNames[strings.ToLower(g.Name)] {
+			return fmt.Errorf("duplicate group ID or name")
+		}
+		groupIDs[g.ID], groupNames[strings.ToLower(g.Name)] = true, true
 	}
 	if d.Sites == nil {
 		d.Sites = []Site{}
@@ -111,6 +191,34 @@ func (d *Document) Validate() error {
 	hosts := map[string]bool{}
 	for i := range d.Sites {
 		s := &d.Sites[i]
+		if s.BudgetMode != "" && s.BudgetMode != "shared" && s.BudgetMode != "capped" && s.BudgetMode != "independent" {
+			return fmt.Errorf("invalid budget mode")
+		}
+		if s.GroupID == "" {
+			s.BudgetMode = "independent"
+		} else {
+			if !groupIDs[s.GroupID] {
+				return fmt.Errorf("unknown group for %s", s.Domain)
+			}
+			if s.BudgetMode == "" {
+				s.BudgetMode = "shared"
+			}
+		}
+		if s.BudgetMode != "shared" && s.BudgetMode != "capped" && s.BudgetMode != "independent" {
+			return fmt.Errorf("invalid budget mode")
+		}
+		if s.ExtraSeconds == 0 {
+			s.ExtraSeconds = 180
+		}
+		if s.ExtraMaxUses == 0 {
+			s.ExtraMaxUses = 1
+		}
+		if s.ExtraSeconds < 1 || s.ExtraSeconds > 86400 || s.ExtraMaxUses < 1 || s.ExtraMaxUses > 100 {
+			return fmt.Errorf("invalid extra time settings")
+		}
+		if s.GrayscaleEnabled && (s.GrayscaleAfter < 1 || s.GrayscaleAfter > 86400 || (s.BudgetMode != "shared" && s.GrayscaleAfter >= s.Seconds)) {
+			return fmt.Errorf("grayscale threshold must be between 1 second and 24 hours")
+		}
 		n, e := Domain(s.Domain)
 		if e != nil {
 			return e
@@ -146,9 +254,9 @@ func (d *Document) Validate() error {
 	return nil
 }
 func Seed(c config.Config) Document {
-	d := Document{Version: 1, Sites: []Site{}, Bypass: []string{}}
+	d := Document{Version: 2, Groups: []Group{}, Sites: []Site{}, Bypass: []string{}}
 	for _, h := range c.Hosts {
-		s := Site{Domain: h, Domains: []string{h}, Enabled: true, Mode: "limit", Seconds: c.DailyLimit}
+		s := Site{Domain: h, Domains: []string{h}, Enabled: true, Mode: "limit", Seconds: c.DailyLimit, BudgetMode: "independent"}
 		if h == "x.com" {
 			s.Domains = append(s.Domains, "www.x.com")
 			d.Bypass = append(d.Bypass, "twimg.com")

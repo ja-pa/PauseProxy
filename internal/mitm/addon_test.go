@@ -5,8 +5,10 @@ import (
 	"compress/gzip"
 	"crypto/tls"
 	"crypto/x509"
+	"fmt"
 	"github.com/lqqyt2423/go-mitmproxy/cert"
 	"github.com/lqqyt2423/go-mitmproxy/proxy"
+	"golang.org/x/text/encoding/charmap"
 	"io"
 	"net"
 	"net/http"
@@ -20,7 +22,62 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
+
+func TestWindows1250HTML(t *testing.T) {
+	// Keep the Czech fixture to verify Windows-1250 diacritics in HTML and JavaScript.
+	for _, encoding := range []string{"windows-1250", "CP1250", "x-cp1250"} {
+		for _, compressed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/gzip=%t", encoding, compressed), func(t *testing.T) {
+				input := `<html><head><meta charset="windows-1250"><meta http-equiv="Content-Type" content="text/html; charset=windows-1250"></head><body>Příliš žluťoučký kůň úpěl ďábelské ódy.<script>const zpráva = "Příliš";</script></body></html>`
+				body, err := charmap.Windows1250.NewEncoder().Bytes([]byte(input))
+				if err != nil {
+					t.Fatal(err)
+				}
+				c := config.Default()
+				a := &Addon{API: &httpapi.API{Config: c}}
+				u, _ := url.Parse("https://x.com/")
+				f := &proxy.Flow{Request: &proxy.Request{Method: "GET", URL: u}, Response: &proxy.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/html; charset=" + encoding}}}}
+				if compressed {
+					var zipped bytes.Buffer
+					g := gzip.NewWriter(&zipped)
+					_, _ = g.Write(body)
+					_ = g.Close()
+					body = zipped.Bytes()
+					f.Response.Header.Set("Content-Encoding", "gzip")
+				}
+				out, err := io.ReadAll(a.StreamResponseModifier(f, bytes.NewReader(body)))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if f.Response.StatusCode != 200 || !utf8.Valid(out) || !bytes.Contains(out, []byte("Příliš žluťoučký kůň úpěl ďábelské ódy.")) || !bytes.Contains(out, []byte(`const zpráva = "Příliš";`)) || !bytes.Contains(out, []byte(`data-pauseproxy="client"`)) {
+					t.Fatal("Windows-1250 page or injected client corrupted")
+				}
+				if f.Response.Header.Get("Content-Type") != "text/html; charset=utf-8" || f.Response.Header.Get("Content-Encoding") != "" || bytes.Contains(out, []byte("windows-1250")) {
+					t.Fatal("stale encoding declaration")
+				}
+			})
+		}
+	}
+}
+
+func TestWindows1250ExpansionLimit(t *testing.T) {
+	c := config.Default()
+	a := &Addon{API: &httpapi.API{Config: c}}
+	u, _ := url.Parse("https://x.com/")
+	f := &proxy.Flow{Request: &proxy.Request{Method: "GET", URL: u}, Response: &proxy.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/html; charset=windows-1250"}}}}
+	// Euro expands from one Windows-1250 byte to three UTF-8 bytes.
+	body := append([]byte("<html><head></head><body>"), bytes.Repeat([]byte{0x80}, maxHTML/2)...)
+	body = append(body, []byte("</body></html>")...)
+	out, err := io.ReadAll(a.StreamResponseModifier(f, bytes.NewReader(body)))
+	if err != nil || f.Response.StatusCode != 502 || !bytes.Contains(out, []byte("Injection failed")) {
+		t.Fatal("UTF-8 expansion must respect the HTML size limit", err)
+	}
+	if f.Response.Header.Get("Content-Type") != "text/html; charset=utf-8" {
+		t.Fatal("error page must declare its own UTF-8 encoding")
+	}
+}
 
 func TestInjectionAndCompression(t *testing.T) {
 	c := config.Default()
@@ -275,5 +332,34 @@ func TestCALoadOnlyAndMITMLocalAPI(t *testing.T) {
 	defer r.Body.Close()
 	if r.StatusCode != 201 {
 		t.Fatal("session POST not intercepted", r.StatusCode)
+	}
+}
+
+func TestBlockPageResumeMarker(t *testing.T) {
+	if !strings.Contains(blockPage("Daily limit reached", true), "data-pauseproxy-blocked") {
+		t.Fatal("missing resume marker")
+	}
+	if strings.Contains(blockPage("Injection failed", false), "data-pauseproxy-blocked") {
+		t.Fatal("injection failure must not auto-reload")
+	}
+}
+
+func TestEmbeddedClientStylesAndCSP(t *testing.T) {
+	out, err := Inject([]byte(`<html><head></head><body>cached app shell</body></html>`), "client-nonce")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(out, []byte("/*__PAUSEPROXY_CSS__*/")) || !bytes.Contains(out, []byte(".wall{position:fixed;inset:0;z-index:2147483647;display:flex;")) {
+		t.Fatal("client styles must be bundled and block until status arrives")
+	}
+	for _, original := range []string{"default-src 'self'", "style-src 'none'; style-src-elem 'self'", "style-src 'nonce-upstream' 'unsafe-inline'"} {
+		got := policy(original, "client-nonce")
+		if !strings.Contains(got, "'nonce-client-nonce'") {
+			t.Fatal("client inline styles not allowed", got)
+		}
+	}
+	got := policy("style-src 'unsafe-inline' https:; style-src-elem 'unsafe-inline'", "client-nonce")
+	if strings.Contains(got, "'nonce-") {
+		t.Fatal("client nonce must not disable upstream inline styles", got)
 	}
 }

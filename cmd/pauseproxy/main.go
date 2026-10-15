@@ -123,7 +123,7 @@ func run() error {
 		go func(s *http.Server, l net.Listener) { errs <- s.Serve(l) }(s, listeners[i])
 	}
 	go func() { errs <- p.Start() }()
-	fmt.Printf("PauseProxy Â· RAM-only statistics\nAdmin: %s\nPAC: http://%s/proxy.pac\nDemo: http://%s/demo\nProxy: %s\n", c.AdminURL, c.PACAddr, c.PACAddr, c.ProxyAddr)
+	fmt.Printf("PauseProxy - RAM-only statistics\nAdmin: %s\nPAC: http://%s/proxy.pac\nDemo: http://%s/demo\nProxy: %s\n", c.AdminURL, c.PACAddr, c.PACAddr, c.ProxyAddr)
 	select {
 	case <-ctx.Done():
 	case e = <-errs:

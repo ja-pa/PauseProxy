@@ -7,6 +7,7 @@ import (
 	"math"
 	"pauseproxy/internal/config"
 	"pauseproxy/internal/sites"
+	"sort"
 	"sync"
 	"time"
 )
@@ -33,21 +34,32 @@ type Session struct {
 	Sequence   uint64    `json:"-"`
 }
 type Counter struct {
-	User    string  `json:"user"`
-	Service string  `json:"service"`
-	Date    string  `json:"date"`
-	Seconds float64 `json:"used_seconds"`
-	Clicks  uint64  `json:"clicks"`
-	Visits  uint64  `json:"visits"`
+	ExtraUses     int             `json:"extra_time_uses"`
+	ExtraSeconds  float64         `json:"extra_time_granted_seconds"`
+	ExtraRequests map[string]bool `json:"-"`
+	User          string          `json:"user"`
+	Service       string          `json:"service"`
+	Date          string          `json:"date"`
+	Seconds       float64         `json:"used_seconds"`
+	Clicks        uint64          `json:"clicks"`
+	Visits        uint64          `json:"visits"`
 }
 type Status struct {
-	Tracking  bool    `json:"tracking"`
-	Service   string  `json:"service"`
-	Instance  string  `json:"instance_id"`
-	Remaining float64 `json:"remaining_seconds"`
-	Blocked   bool    `json:"blocked"`
-	Reason    string  `json:"reason"`
-	Warning   int     `json:"warning_seconds"`
+	GroupID            string  `json:"group_id,omitempty"`
+	GroupName          string  `json:"group_name,omitempty"`
+	GroupRemaining     float64 `json:"group_remaining_seconds,omitempty"`
+	LimitScope         string  `json:"limit_scope,omitempty"`
+	Grayscale          bool    `json:"grayscale"`
+	ExtraAvailable     bool    `json:"extra_time_available"`
+	ExtraSeconds       int     `json:"extra_time_seconds"`
+	ExtraUsesRemaining int     `json:"extra_time_uses_remaining"`
+	Tracking           bool    `json:"tracking"`
+	Service            string  `json:"service"`
+	Instance           string  `json:"instance_id"`
+	Remaining          float64 `json:"remaining_seconds"`
+	Blocked            bool    `json:"blocked"`
+	Reason             string  `json:"reason"`
+	Warning            int     `json:"warning_seconds"`
 }
 type Heartbeat struct {
 	ID       string `json:"session_id"`
@@ -57,21 +69,24 @@ type Heartbeat struct {
 	Clicks   int    `json:"click_delta"`
 }
 type Store struct {
-	mu        sync.Mutex
-	cfg       config.Config
-	loc       *time.Location
-	now       func() time.Time
-	last      time.Time
-	instance  string
-	sessions  map[string]*Session
-	counters  map[string]*Counter
-	rules     sites.Document
-	rulesPath string
+	mu         sync.Mutex
+	cfg        config.Config
+	loc        *time.Location
+	now        func() time.Time
+	last       time.Time
+	instance   string
+	sessions   map[string]*Session
+	counters   map[string]*Counter
+	groupUsage map[groupKey]float64
+	rules      sites.Document
+	rulesPath  string
 }
+
+type groupKey struct{ User, Group, Date string }
 
 func New(c config.Config, now func() time.Time) *Store {
 	l, _ := time.LoadLocation(c.Timezone)
-	return &Store{cfg: c, loc: l, now: now, last: now(), instance: Token(), sessions: map[string]*Session{}, counters: map[string]*Counter{}, rules: sites.Seed(c)}
+	return &Store{cfg: c, loc: l, now: now, last: now(), instance: Token(), sessions: map[string]*Session{}, counters: map[string]*Counter{}, groupUsage: map[groupKey]float64{}, rules: sites.Seed(c)}
 }
 func (s *Store) counter(user string, t time.Time, site ...string) *Counter {
 	date := t.In(s.loc).Format("2006-01-02")
@@ -167,6 +182,10 @@ func (s *Store) advance(t time.Time) {
 				stop = midnight
 			}
 			s.counter(u.user, start, u.site).Seconds += stop.Sub(start).Seconds()
+			if rule, ok := s.rules.Find(u.site); ok && rule.Enabled && rule.Mode == "limit" && rule.SharesGroup() {
+				key := groupKey{u.user, rule.GroupID, local.Format("2006-01-02")}
+				s.groupUsage[key] += stop.Sub(start).Seconds()
+			}
 			start = stop
 		}
 	}
@@ -177,14 +196,52 @@ func (s *Store) advance(t time.Time) {
 			delete(s.counters, k)
 		}
 	}
+	for key := range s.groupUsage {
+		if key.Date < oldest {
+			delete(s.groupUsage, key)
+		}
+	}
 }
 func (s *Store) status(u, site string, t time.Time) Status {
 	rule, ok := s.rules.Find(site)
 	if !ok || !rule.Enabled {
 		return Status{Instance: s.instance, Service: site, Tracking: false}
 	}
-	remaining := math.Max(0, float64(rule.Seconds)-s.counter(u, t, site).Seconds)
-	v := Status{Instance: s.instance, Remaining: remaining, Warning: s.cfg.Warning, Tracking: true, Service: site}
+	c := s.counter(u, t, site)
+	return s.ruleStatus(rule, *c, t)
+}
+
+func dailyBudget(rule sites.Site, c Counter) float64 {
+	budget := float64(rule.Seconds)
+	if rule.ExtraEnabled {
+		budget += c.ExtraSeconds
+	}
+	return budget
+}
+
+// Evaluate a rule without creating a counter, including for unused overview rows.
+func (s *Store) ruleStatus(rule sites.Site, c Counter, t time.Time) Status {
+	remaining := math.Max(0, dailyBudget(rule, c)-c.Seconds)
+	groupRemaining := math.Inf(1)
+	g, grouped := s.rules.FindGroup(rule.GroupID)
+	if grouped && rule.SharesGroup() {
+		groupRemaining = math.Max(0, float64(g.Seconds)-s.groupUsage[groupKey{c.User, g.ID, t.In(s.loc).Format("2006-01-02")}])
+		if rule.BudgetMode == "shared" {
+			remaining = groupRemaining
+		} else {
+			remaining = math.Min(remaining, groupRemaining)
+		}
+	}
+	v := Status{Instance: s.instance, Remaining: remaining, Warning: s.cfg.Warning, Tracking: rule.Enabled, Service: rule.Domain}
+	if grouped {
+		v.GroupID, v.GroupName = g.ID, g.Name
+		if rule.SharesGroup() {
+			v.GroupRemaining = groupRemaining
+		}
+	}
+	if !rule.Enabled {
+		return v
+	}
 	if rule.Mode == "block" {
 		v.Blocked = true
 		v.Reason = "This site is always blocked"
@@ -193,7 +250,16 @@ func (s *Store) status(u, site string, t time.Time) Status {
 		v.Reason = "Scheduled break"
 	} else if remaining <= 0 {
 		v.Blocked = true
-		v.Reason = "Daily limit reached"
+		v.Reason, v.LimitScope = "Daily limit reached", "site"
+		if groupRemaining <= 0 {
+			v.Reason, v.LimitScope = "Group limit reached: "+g.Name, "group"
+		}
+	}
+	v.Grayscale = rule.Mode == "limit" && rule.GrayscaleEnabled && c.Seconds >= float64(rule.GrayscaleAfter)
+	v.ExtraSeconds = rule.ExtraSeconds
+	if rule.ExtraEnabled && rule.Mode == "limit" && rule.BudgetMode != "shared" {
+		v.ExtraUsesRemaining = max(0, rule.ExtraMaxUses-c.ExtraUses)
+		v.ExtraAvailable = v.Blocked && !s.cfg.Scheduled(t.In(s.loc)) && v.ExtraUsesRemaining > 0 && groupRemaining > 0
 	}
 	return v
 }
@@ -275,10 +341,35 @@ func (s *Store) Status(user string, selected ...string) Status {
 }
 
 type Snapshot struct {
-	Instance string         `json:"instance_id"`
-	Counters []Counter      `json:"counters"`
-	Limits   map[string]int `json:"limits"`
-	Sessions int            `json:"sessions"`
+	Groups   []GroupOverview `json:"group_overview"`
+	Instance string          `json:"instance_id"`
+	Counters []Counter       `json:"counters"`
+	Limits   map[string]int  `json:"limits"`
+	Sessions int             `json:"sessions"`
+	Date     string          `json:"date"`
+	Overview []OverviewRow   `json:"overview"`
+}
+
+type OverviewRow struct {
+	SiteBudget float64 `json:"site_budget_seconds"`
+	GroupID    string  `json:"group_id"`
+	BudgetMode string  `json:"budget_mode"`
+	User       string  `json:"user"`
+	Site       string  `json:"site"`
+	Used       float64 `json:"used_seconds"`
+	Budget     float64 `json:"budget_seconds"`
+	Remaining  float64 `json:"remaining_seconds"`
+	State      string  `json:"state"`
+}
+
+type GroupOverview struct {
+	User      string  `json:"user"`
+	GroupID   string  `json:"group_id"`
+	Name      string  `json:"name"`
+	Used      float64 `json:"used_seconds"`
+	Budget    float64 `json:"budget_seconds"`
+	Remaining float64 `json:"remaining_seconds"`
+	State     string  `json:"state"`
 }
 
 func (s *Store) Snapshot() Snapshot {
@@ -294,7 +385,64 @@ func (s *Store) Snapshot() Snapshot {
 	for _, v := range s.rules.Sites {
 		ls[v.Domain] = v.Seconds
 	}
-	return Snapshot{s.instance, cs, ls, len(s.sessions)}
+	date := t.In(s.loc).Format("2006-01-02")
+	uniqueUsers := map[string]bool{}
+	for _, user := range s.cfg.Users {
+		uniqueUsers[user] = true
+	}
+	users := make([]string, 0, len(uniqueUsers))
+	for user := range uniqueUsers {
+		users = append(users, user)
+	}
+	sort.Strings(users)
+	rows := make([]OverviewRow, 0, len(users)*len(s.rules.Sites))
+	groups := []GroupOverview{}
+	for _, user := range users {
+		for _, g := range s.rules.Groups {
+			used := s.groupUsage[groupKey{user, g.ID, date}]
+			remaining := math.Max(0, float64(g.Seconds)-used)
+			state := "available"
+			if s.cfg.Scheduled(t.In(s.loc)) {
+				state = "scheduled_break"
+			} else if remaining <= 0 {
+				state = "limit_reached"
+			}
+			groups = append(groups, GroupOverview{user, g.ID, g.Name, used, float64(g.Seconds), remaining, state})
+		}
+		for _, rule := range s.rules.Sites {
+			c := Counter{User: user}
+			if existing := s.counters[user+"/"+rule.Domain+"/"+date]; existing != nil {
+				c = *existing
+			}
+			status := s.ruleStatus(rule, c, t)
+			state := "available"
+			switch {
+			case !rule.Enabled:
+				state = "paused"
+			case status.Reason == "This site is always blocked":
+				state = "always_blocked"
+			case status.Reason == "Scheduled break":
+				state = "scheduled_break"
+			case status.LimitScope == "group":
+				state = "group_limit_reached"
+			case status.Reason == "Daily limit reached":
+				state = "limit_reached"
+			}
+			budget := dailyBudget(rule, c)
+			if rule.SharesGroup() {
+				if g, ok := s.rules.FindGroup(rule.GroupID); ok {
+					if rule.BudgetMode == "shared" {
+						budget = float64(g.Seconds)
+					} else {
+						budget = math.Min(budget, float64(g.Seconds))
+					}
+				}
+			}
+			rows = append(rows, OverviewRow{User: user, Site: rule.Domain, Used: c.Seconds, GroupID: rule.GroupID, BudgetMode: rule.BudgetMode,
+				Budget: budget, SiteBudget: dailyBudget(rule, c), Remaining: status.Remaining, State: state})
+		}
+	}
+	return Snapshot{Instance: s.instance, Counters: cs, Limits: ls, Sessions: len(s.sessions), Date: date, Overview: rows, Groups: groups}
 }
 func (s *Store) SetLimit(domain string, n int) error {
 	return s.ChangeRules(func(d *sites.Document) error {
@@ -330,5 +478,58 @@ func (s *Store) Reset() {
 	s.instance = Token()
 	s.sessions = map[string]*Session{}
 	s.counters = map[string]*Counter{}
+	s.groupUsage = map[groupKey]float64{}
 	s.last = s.now()
+}
+
+// ExtraTime grants a daily shared budget, atomically and idempotently.
+type ExtraRequest struct {
+	ID        string `json:"session_id"`
+	Instance  string `json:"instance_id"`
+	RequestID string `json:"request_id"`
+}
+
+var ErrExtra = errors.New("extra time is not available")
+
+func (s *Store) ExtraTime(user, ip, host string, b ExtraRequest) (Status, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t := s.now()
+	s.advance(t)
+	se := s.sessions[b.ID]
+	if se == nil || se.User != user || se.IP != ip || se.Host != host || b.Instance != s.instance {
+		return Status{}, ErrSession
+	}
+	if len(b.RequestID) < 1 || len(b.RequestID) > 128 {
+		return Status{}, errors.New("invalid request_id")
+	}
+	rule, ok := s.rules.Find(se.Site)
+	if host != "" {
+		matched, valid := s.rules.Match(host)
+		ok = ok && valid && matched.Domain == se.Site
+	}
+	if !ok || !rule.Enabled {
+		return Status{}, ErrExtra
+	}
+	c := s.counter(user, t, se.Site)
+	v := s.status(user, se.Site, t)
+	if c.ExtraRequests[b.RequestID] {
+		return v, nil
+	}
+	if !v.ExtraAvailable {
+		return v, ErrExtra
+	}
+	c.ExtraSeconds = math.Max(c.ExtraSeconds, c.Seconds-float64(rule.Seconds)) + float64(rule.ExtraSeconds)
+	c.ExtraUses++
+	// A blocked page must send a fresh active heartbeat before spending the grant.
+	for _, active := range s.sessions {
+		if active.User == user && active.Site == se.Site {
+			active.Until = t
+		}
+	}
+	if c.ExtraRequests == nil {
+		c.ExtraRequests = map[string]bool{}
+	}
+	c.ExtraRequests[b.RequestID] = true
+	return s.status(user, se.Site, t), nil
 }

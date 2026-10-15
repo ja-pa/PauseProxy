@@ -1,70 +1,70 @@
 # PauseProxy
 
-Lokální MVP: Go aplikace, selektivní HTTPS MITM, PAC, JavaScript s heartbeat a správa webů. Statistiky a relace jsou pouze v RAM. Pravidla webů se ukládají do `.local/sites.json`. Počáteční X zachová limit **120 sekund**; nový web má výchozích **15 minut**.
+Local MVP: a Go application with selective HTTPS MITM, PAC, JavaScript heartbeats and site management. Statistics and sessions stay in RAM. Site rules are saved to `.local/sites.json`. The initial X rule retains its **120-second** limit; new sites default to **15 minutes**.
 
-Pro práci na kódu použijte [vývojářský průvodce DEV_README.md](DEV_README.md): architektura, invarianty PAC/MITM, testy, CSP a známé problémy.
+For code changes, see the [DEV_README.md developer guide](DEV_README.md): architecture, PAC/MITM invariants, tests, CSP and known issues.
 
-## Lokální konfigurace
+## Local configuration
 
-Před prvním spuštěním zkopírujte `config.dev.json` do `config.local.json` a v kopii nastavte vlastní `admin_password`. `config.local.json` je ignorovaný Gitem a vývojové skripty jej automaticky upřednostní. Šablona neobsahuje heslo. CA a pravidla zůstávají v `.local/`.
+Before the first run, copy `config.dev.json` to `config.local.json` and set your own `admin_password` in the copy. Git ignores `config.local.json`, and the development scripts automatically prefer it. The template contains no password. The CA and rules remain in `.local/`.
 
-## Rychlé spuštění z Ubuntu WSL
+## Quick start in Ubuntu WSL
 
-V Ubuntu terminálu přejděte do složky projektu (Windows disk C: je dostupný pod `/mnt/c/…`) a spusťte:
+In an Ubuntu terminal, change to the project directory (Windows drive C: is available under `/mnt/c/…`) and run:
 
 ```sh
 bash ./run_test.sh
 ```
 
-Skript používá Linux Go ≥ 1.26. Pokud chybí, stáhne Go 1.27.1 z oficiálního zdroje a ověří připnutý SHA-256. Linux toolchain uloží do `.tools/go-linux`, odděleně od Windows `.tools/go`. Podporuje amd64 a arm64; nemění systémový PATH ani neprovádí `sudo`.
+The script uses Linux Go ≥ 1.26. If unavailable, it downloads Go 1.27.1 from the official source and verifies the pinned SHA-256. It stores the Linux toolchain in `.tools/go-linux`, separately from Windows `.tools/go`. It supports amd64 and arm64, leaves the system PATH unchanged and does not run `sudo`.
 
-Provede testy, `go vet` i race detector, sestaví `dist/pauseproxy-linux` a spustí aplikaci s `config.local.json` (pokud existuje; jinak se šablonou `config.dev.json`). Chybějící CA vytvoří jednorázově, existující znovu použije bez přepsání. Pro neúplnou nebo neplatnou CA skončí s chybou. Aplikace běží, dokud nestisknete **Ctrl+C**; skript ukončí pouze svůj proces.
+It runs tests, `go vet` and the race detector, builds `dist/pauseproxy-linux`, and starts the application with `config.local.json` if present, otherwise with the `config.dev.json` template. It creates a missing CA once and reuses an existing CA without overwriting it. An incomplete or invalid CA causes an error. The application runs until you press **Ctrl+C**; the script stops only its own process.
 
 ```sh
-bash ./run_test.sh --check       # Jen kontroly; bez serveru a bootstrapu CA
-bash ./run_test.sh --skip-race   # Výslovné vynechání race detectoru
+bash ./run_test.sh --check       # Checks only; no server or CA bootstrap
+bash ./run_test.sh --skip-race   # Explicitly skip the race detector
 bash ./run_test.sh --help
 ```
 
-V Ubuntu potřebujete `curl`, `python3`, `timeout` (coreutils), pro stažení také `tar` a `sha256sum`. Race detector vyžaduje GCC: `sudo apt update && sudo apt install build-essential`. Skript chybějící závislosti oznámí a nic systémově neinstaluje.
+Ubuntu requires `curl`, `python3` and `timeout` (coreutils), plus `tar` and `sha256sum` for downloads. The race detector requires GCC: `sudo apt update && sudo apt install build-essential`. The script reports missing dependencies without installing anything system-wide.
 
-Nejprve ukončete případnou běžící Windows verzi ve vlastním terminálu. Obě instance používají porty **9080/9082/9083** a ve WSL mirrored režimu se mohou střetnout. Skript obsazené porty vysvětlí; cizí procesy neukončuje. Ani samotná kontrola `--check` existující server neovlivní.
+First stop any running Windows instance in its own terminal. Both instances use ports **9080/9082/9083** and may conflict in WSL mirrored mode. The script explains occupied ports without stopping other processes. Running `--check` also leaves an existing server unaffected.
 
-Po startu otevřete ve **Windows Chrome nebo Edge** [návod krok za krokem](https://127.0.0.1:9083/howto). Je dostupný bez přihlášení, obsahuje demo, import veřejné CA, nastavení PAC, test X, řešení problémů i návrat k původnímu nastavení. Odkaz je také ve správě. Windows přístup k WSL přes localhost popisuje [dokumentace Microsoftu](https://learn.microsoft.com/en-us/windows/wsl/networking).
+After startup, open the [step-by-step setup guide](https://127.0.0.1:9083/howto) in **Windows Chrome or Edge**. It requires no sign-in and covers the demo, public CA import, PAC setup, testing X, troubleshooting and restoring the original settings. Settings also links to the guide. See [Microsoft's documentation](https://learn.microsoft.com/en-us/windows/wsl/networking) for Windows access to WSL through localhost.
 
-Pro Chrome na Androidu je v návodu [samostatný postup pro telefon přes Wi-Fi](https://127.0.0.1:9083/howto#android): LAN konfigurace, WSL mirrored networking nebo Windows běh, firewall pro konkrétní telefon, import veřejné CA, Wi-Fi PAC, test měření a návrat k původnímu nastavení.
+For Chrome on Android, the guide has a [separate procedure for a phone over Wi-Fi](https://127.0.0.1:9083/howto#android): LAN configuration, WSL mirrored networking or running on Windows, firewall access for a specific phone, public CA import, Wi-Fi PAC, tracking checks and restoring the original settings.
 
-Skript lze spustit z libovolné pracovní složky; nastavení čte vždy ze složky projektu. Existující Windows CA v `.local/ca` lze využít i ve WSL, takže při nezměněné CA není nutný nový import. Windows proxy a úložiště důvěryhodných certifikátů nastavujete ručně podle návodu.
+The script can run from any working directory; it always reads settings from the project directory. An existing Windows CA in `.local/ca` can also be used in WSL, so no new import is needed if the CA is unchanged. Configure the Windows proxy and trusted certificate store manually as described in the guide.
 
 ## OpenWrt / Turris Omnia
 
-Balíček, služba a routerové testy jsou v samostatném repozitáři [PauseProxy-wrt](https://github.com/ja-pa/PauseProxy-wrt). Ten sestavuje tuto aplikaci z připnutého Git submodulu.
+The package, service and router tests live in the separate [PauseProxy-wrt](https://github.com/ja-pa/PauseProxy-wrt) repository. It builds this application from a pinned Git submodule.
 
-## Rychlé spuštění na Windows
+## Quick start on Windows
 
-V PowerShellu v kořeni projektu:
+In PowerShell at the project root:
 
 ```powershell
-# Pouze pokud nemáte Go >= 1.26. Stáhne ověřený portable Go do .tools.
+# Only if Go >= 1.26 is unavailable. Downloads verified portable Go into .tools.
 ./scripts/setup.ps1
 
-# Jednorázově vytvoří CA a její privátní klíč v .local/ca.
+# Creates the CA and its private key in .local/ca once.
 ./scripts/dev.ps1 bootstrap
 
-# Běžný start CA jen čte. Ukončení: Ctrl+C.
+# Normal startup only reads the CA. Stop with Ctrl+C.
 ./scripts/dev.ps1 start
 ```
 
-Pokud PowerShell blokuje skripty, lze konkrétní příkaz spustit přes `powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1 start`. Není nutné měnit systémovou execution policy.
+If PowerShell blocks scripts, run the specific command with `powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1 start`. No system-wide execution policy change is required.
 
-- Správa: <https://127.0.0.1:9083>
-- Demo bez PAC a instalace CA: <http://127.0.0.1:9082/demo>
+- Settings: <https://127.0.0.1:9083>
+- Demo without PAC or CA installation: <http://127.0.0.1:9082/demo>
 - PAC: <http://127.0.0.1:9082/proxy.pac>
 - Proxy: `127.0.0.1:9080`
 
-Do správy vložte **heslo nastavené v `admin_password`**. Zůstává jen v paměti stránky a nepoužívá cookies ani localStorage. Demo čerpá rozpočet vybraného webu (výchozí X): klikněte na tlačítko, otevřete druhou kartu, skryjte obě nebo upravte minuty webu ve správě. Statistiky se obnovují každé dvě sekundy. Reset i restart zachovají uložená pravidla a limity webů; restart vynuluje statistiky.
+Sign in to settings with **the password configured in `admin_password`**. It stays only in page memory and uses neither cookies nor localStorage. The demo spends the selected site's budget (X by default): click the button, open a second tab, hide both tabs or adjust the site's minutes in settings. Statistics refresh every two seconds. Reset and restart preserve saved site rules and limits; restart clears statistics.
 
-S již dostupným Go (Windows i Linux):
+With Go already available (Windows or Linux):
 
 ```sh
 go run ./cmd/pauseproxy bootstrap-ca --config ./config.local.json
@@ -74,101 +74,129 @@ go vet ./...
 go build -o pauseproxy ./cmd/pauseproxy
 ```
 
-## Trvalá pravidla webů a média mimo proxy
+## Persistent site rules and media exceptions
 
-Ve správě přidejte hlavní doménu, přesné cílové domény, denní minuty, režim Denní limit / Vždy blokovat a zapnutí. Domény jednoho webu sdílejí rozpočet; každý uživatel má vlastní spotřebu. Předvolby X a YouTube pouze vyplní návrh a uloží se tlačítkem Uložit. YouTube nabízí `youtube.com`, `www.youtube.com`, `m.youtube.com`, `youtu.be` a výjimky `googlevideo.com`, `ytimg.com`. X nabízí `x.com`, `www.x.com` a výjimku `twimg.com`.
+In settings, add the primary domain, exact target domains, daily minutes, Daily limit / Always blocked mode and enabled state. A site's domains share a budget; each user has their own usage. The X and YouTube presets only fill in a suggestion, which is saved with Save. YouTube suggests `youtube.com`, `www.youtube.com`, `m.youtube.com`, `youtu.be` and the exceptions `googlevideo.com`, `ytimg.com`. X suggests `x.com`, `www.x.com` and the exception `twimg.com`.
 
-Výjimky Média mimo proxy zahrnují doménu i její subdomény a mají přednost. Konfliktní cílová doména je odmítnuta. Neznámé subdomény nejsou MITM cíle. Video přímo z cílové domény nelze podle hostitele oddělit. Přímé mediální odkazy mohou zůstat dostupné i při blokaci stránky.
+Media exceptions include the domain and its subdomains and take precedence. Conflicting target domains are rejected. Unknown subdomains are not MITM targets. Video served directly from a target domain cannot be separated by hostname. Direct media links may remain accessible even when the page is blocked.
 
-`sites_file` je standardně `.local/sites.json`, relativně k adresáři spouštěcího configu (bez --config k pracovní složce). Configy v kořeni projektu sdílejí stejný soubor. Chybějící soubor vznikne prvním uložením; existující má přednost včetně prázdného seznamu. Neplatný soubor zastaví start a nepřepisuje se. Změny se ukládají atomickým nahrazením; chyba zápisu zachová RAM pravidla i PAC. Podporována je jedna běžící instance; ruční editaci načte restart.
+`sites_file` defaults to `.local/sites.json`, relative to the startup configuration directory (or the working directory without `--config`). Configurations at the project root share the same file. A missing file is created on the first save; an existing file takes precedence, including an empty list. An invalid file stops startup and is not overwritten. Changes use atomic replacement; a write failure preserves the in-memory rules and PAC. One running instance is supported; restart to load manual edits.
 
-Po změně domén je serverový PAC aktuální ihned, ale prohlížeč drží vlastní PAC kontext. Ve Windows vypněte/zapněte instalační skript se stejnou URL, v Android Wi-Fi vraťte Proxy z Žádná na automatickou konfiguraci. Zavřete dotčené karty; po změně výjimek ukončete stará spojení, případně celý prohlížeč. Existující MITM tunel se nemůže změnit na přímý. [Chování PAC v Chromium](https://chromium.googlesource.com/chromium/src.git/+/refs/heads/lkgr/net/docs/proxy.md).
+After domain changes, the server's PAC is current immediately, but browsers keep their own PAC context. On Windows, turn the setup script off and on with the same URL; in Android Wi-Fi settings, change Proxy to None and then restore automatic configuration. Close affected tabs; after changing exceptions, close old connections or restart the browser. An existing MITM tunnel cannot become a direct connection. See [Chromium PAC behavior](https://chromium.googlesource.com/chromium/src.git/+/refs/heads/lkgr/net/docs/proxy.md).
 
-Odebrání či vypnutí pravidla/domény ukončí měření a odstraní překryv. Statistiky se nemažou; znovu přidaný web během stejného běhu zachová dnešní spotřebu. Reset statistik zachová uložená pravidla. Demo umožní zvolit web.
+Removing or disabling a rule/domain stops tracking and removes the overlay. Statistics are retained; a site re-added during the same run keeps today's usage. Resetting statistics preserves saved rules. The demo lets you select a site.
 
-Seznamová API mají limit JSON 64 KiB, ostatní 4 KiB. Limity: 32 webů, 32 přesných domén na web a 128 výjimek. Nová pravidla mají výchozích 900 sekund; POST také může atomicky přidat `bypass_domains` předvolby. PATCH upravuje cílové domény, zapnutí, režim a sekundový limit; hlavní identifikátor nelze přejmenovat.
+List APIs accept up to 64 KiB of JSON; other APIs accept 4 KiB. Limits: 32 sites, 32 exact domains per site and 128 exceptions. New rules default to 900 seconds; POST can also atomically add a preset's `bypass_domains`. PATCH changes target domains, enabled state, mode and the limit in seconds; the primary identifier cannot be renamed.
 
-## Chrome a X
+## Chrome and X
 
-1. Nejprve ověřte demo. Nepotřebuje změny v systému.
-2. Ve Windows otevřete `.local/ca/ca-cert.pem` a ručně importujte **veřejný certifikát** do důvěryhodných kořenových autorit aktuálního uživatele. Alternativně explicitně spusťte `certutil -user -addstore Root .local/ca/ca-cert.pem`. Klíč `ca-key.pem` nikam neimportujte ani nesdílejte. Bootstrap omezuje přístup k CA adresáři na aktuálního uživatele pomocí Windows ACL; na Linuxu používá 0700/0600.
-3. Nastavení Windows → Síť a internet → Proxy → Používat instalační skript: `http://127.0.0.1:9082/proxy.pac`.
-4. Pro test použijte čistý profil Chrome bez dříve registrovaného service workeru X. Alternativně v DevTools → Application → Service Workers odregistrujte existující service worker tlačítkem Unregister. Nové service workery proxy odmítá. Vložený klient odregistruje staré registrace daného originu; již otevřené karty zavřete a web znovu otevřete. Pokud se načítá uložená stránka bez klienta, odregistrujte worker ručně v DevTools → Application → Service Workers → Unregister a použijte Ctrl+Shift+R.
-5. Otevřete `https://x.com`. Ověřte odpočet, kliknutí ve správě, varování, překryv v otevřené kartě a 403 při nové navigaci po vyčerpání limitu.
-6. Po experimentu vypněte instalační skript proxy. CA lze odebrat v `certmgr.msc` podle názvu **PauseProxy Development CA**. Aplikace systémové nastavení ani trust store sama nemění.
+1. Try the demo first. It needs no system changes.
+2. On Windows, open `.local/ca/ca-cert.pem` and manually import the **public certificate** into the current user's trusted root authorities. Alternatively, explicitly run `certutil -user -addstore Root .local/ca/ca-cert.pem`. Never import or share `ca-key.pem`. Bootstrap restricts CA directory access to the current user with Windows ACLs; Linux uses 0700/0600 permissions.
+3. Windows Settings → Network & internet → Proxy → Use setup script: `http://127.0.0.1:9082/proxy.pac`.
+4. Test with a fresh Chrome profile without a previously registered X service worker. Alternatively, use Unregister in DevTools → Application → Service Workers. The proxy rejects new service workers. The injected client unregisters old registrations for that origin; close existing tabs and reopen the site. If a cached page loads without the client, unregister the worker manually in DevTools → Application → Service Workers → Unregister and use Ctrl+Shift+R.
+5. Open `https://x.com`. Verify the countdown, clicks in settings, warning, overlay in an open tab and 403 on a new navigation after the budget runs out.
+6. After the experiment, disable the proxy setup script. Remove the CA in `certmgr.msc` under **PauseProxy Development CA** if desired. The application does not change system settings or the trust store itself.
 
-PAC posílá přes proxy pouze přesné zapnuté cílové domény. Výchozí X má `x.com` a `www.x.com`; `api.x.com` ani jiné subdomény se automaticky nezahrnují. `pbs.twimg.com`, `video.twimg.com` a ostatní necílové weby vrací DIRECT. Necílový HTTPS host doručený explicitní proxy zůstane šifrovaným tunelem. Upstream TLS se ověřuje. [Rozhraní go-mitmproxy](https://github.com/lqqyt2423/go-mitmproxy/tree/v1.9.3) je připnuté na v1.9.3.
+PAC proxies only exact enabled target domains. The default X rule has `x.com` and `www.x.com`; `api.x.com` and other subdomains are not included automatically. `pbs.twimg.com`, `video.twimg.com` and other non-target sites return DIRECT. A non-target HTTPS host sent through an explicit proxy remains an encrypted tunnel. Upstream TLS is verified. The [go-mitmproxy interface](https://github.com/lqqyt2423/go-mitmproxy/tree/v1.9.3) is pinned to v1.9.3.
 
-## Konfigurace a telefon přes LAN
+## Configuration and a phone over LAN
 
-`config.dev.json` se při startu jen načítá. Bez `--config` fungují stejné vestavěné výchozí hodnoty. Každý přidaný web má vlastní rozpočet pro každého uživatele. Náhodné rozpočty nejsou součástí MVP. OpenWrt integraci spravuje PauseProxy-wrt.
+`config.dev.json` is only read at startup. Without `--config`, the same built-in defaults apply. Each added site has a separate budget for each user. Random budgets are outside this MVP. PauseProxy-wrt maintains the OpenWrt integration.
 
-Pro LAN vytvořte vlastní kopii konfigurace:
+For LAN use, create your own configuration copy:
 
 - `proxy_addr`: `0.0.0.0:9080`, `pac_addr`: `0.0.0.0:9082`.
-- `advertised_proxy`: skutečná IP PC, např. `192.168.1.50:9080`.
-- V `users` přidejte přesnou IP telefonu, např. `"192.168.1.70": "dev"`. Více IP stejného uživatele sdílí rozpočet. Identita se bere ze spojení, klient ji nevolí.
-- Lokálně ponechte `admin_addr` jako `127.0.0.1:9083` a `admin_url` jako `https://127.0.0.1:9083`. Pro LAN nastavte listener, veřejnou HTTPS adresu PC a povolené IP v `users`; neznámé IP odmítá i správa.
-- Firewall povolte pro 9080 a 9082 pouze na privátní síti a z testovaných IP.
-- Na telefonu použijte PAC `http://192.168.1.50:9082/proxy.pac` a ručně důvěřujte veřejné CA. Některé verze Androidu nebo aplikace mají jiné možnosti PAC a důvěry; cílem je Chrome ve Wi-Fi.
+- `advertised_proxy`: the PC's actual IP, e.g. `192.168.1.50:9080`.
+- Add the phone's exact IP to `users`, e.g. `"192.168.1.70": "dev"`. Multiple IPs for one user share a budget. Identity comes from the connection; the client cannot choose it.
+- Locally, keep `admin_addr` at `127.0.0.1:9083` and `admin_url` at `https://127.0.0.1:9083`. For LAN access, configure the listener, the PC's public HTTPS address and allowed IPs in `users`; settings also rejects unknown IPs.
+- Allow ports 9080 and 9082 through the firewall only on a private network and from the test IPs.
+- On the phone, use PAC `http://192.168.1.50:9082/proxy.pac` and manually trust the public CA. PAC and trust options vary between Android versions and applications; the target is Chrome over Wi-Fi.
 
-Odkazy při bindu na `0.0.0.0` nahraďte skutečnou LAN IP. `hosts` a `daily_limit_seconds` slouží k počátečnímu převzetí pravidel, pokud `sites_file` ještě neexistuje. Aktuální pravidla řídí PAC i MITM. Limit má rozsah 1–86400 sekund. `blocked_hours` přijímá např. `[{"start":"22:00","end":"06:00"}]`; pracuje v `Europe/Prague` a platí pro všechny zapnuté weby.
+Replace `0.0.0.0` in links with the actual LAN IP. `hosts` and `daily_limit_seconds` seed the initial rules when `sites_file` does not exist. Current rules control both PAC and MITM. The limit is 1–86400 seconds. `blocked_hours` accepts, for example, `[{"start":"22:00","end":"06:00"}]`; it uses `Europe/Prague` and applies to every enabled site.
 
-## Stav, API a disk
+## State, API and disk
 
-Čas je sjednocení aktivních relací uživatele pro konkrétní web; karta musí být viditelná, mít fokus a mít interakci během posledních 60 sekund. Pohyb ukazatele, kliknutí, klávesnice, dotyk nebo posouvání obnoví minutový interval. Po jeho uplynutí se zobrazí „měření pozastaveno“; další interakce nebo návrat do okna měření obnoví. Pouhé přehrávání videa interval neobnovuje. Ztráta fokusu okna a skrytí karty měření zastaví. Současné karty jej nenásobí. Heartbeat chodí každých 5 sekund a obnovuje 10sekundovou platnost. První heartbeat neúčtuje minulost. Skrytí karty odesílá závěrečné hlášení; ztracené hlášení může přidat nejvýše zbývajících 10 sekund. Denní interval se dělí o místní půlnoci. Kliknutí jsou agregované `isTrusted` události mimo rozhraní PauseProxy; opakovaná dávka nepřidá kliknutí znovu.
+Time is the union of a user's active sessions for a particular site; a tab must be visible, focused and have an interaction within the last 60 seconds. Pointer movement, clicks, keyboard input, touch or scrolling renew the one-minute interval. After it expires, “paused” appears; another interaction or returning to the window resumes tracking. Video playback alone does not renew the interval. Losing window focus or hiding the tab stops tracking. Concurrent tabs do not multiply usage. Heartbeats arrive every 5 seconds and renew a 10-second lease. The first heartbeat does not charge past time. Hiding a tab sends a final report; a lost report can add at most the remaining 10 seconds. Daily accounting splits at local midnight. Clicks are aggregated `isTrusted` events outside the PauseProxy interface; retrying a batch does not add clicks again.
 
-RAM drží maximálně 256 relací s expirací po 5 minutách, agregace aktuálního a předchozího dne, limity a nejvýše 128 hostitelských certifikátů. Obsah kliknutí, cíle, souřadnice ani historie URL se neukládají. Statistiky, relace ani provozní logy se neukládají. Pouze explicitní uložení pravidel zapisuje soubor sites_file. HTML se zpracovává v RAM s hranicí 4 MiB (komprimované i rozbalené); ostatní odpovědi se streamují. WebSocket a SSE jsou v tomto MVP odmítnuté, protože upstream uchovává jejich historii v paměti.
+RAM holds at most 256 sessions expiring after 5 minutes, aggregates for today and yesterday, limits and at most 128 host certificates. Click content, targets, coordinates and URL history are not retained. Statistics, sessions and operational logs are not persisted. Only explicitly saving rules writes `sites_file`. HTML is processed in RAM with a 4 MiB limit (compressed and decompressed); other responses are streamed. WebSocket and SSE are rejected in this MVP because the upstream library retains their history in memory.
 
-Upstream požadavky používají sdílený HTTP transport, který při výpadku umí vytvořit nové spojení nezávisle na spojení prohlížeče. Těla do 256 KiB se krátce bufferují pouze v RAM, aby je Go mohl při bezpečném transportním opakování znovu přečíst; větší těla se streamují. Nezavádíme vlastní automatické opakování POST požadavků. Hláška `context canceled` může vzniknout při zrušení načítání prohlížečem; sama o sobě neznamená pád proxy. Opakované chyby při běžném načítání nebo `cannot rewind body after connection loss` vyžadují kontrolu transportu.
+Upstream requests use a shared HTTP transport that can establish a new connection after a failure independently of the browser connection. Bodies up to 256 KiB are briefly buffered only in RAM so Go can reread them for safe transport retries; larger bodies are streamed. There is no custom automatic retry of POST requests. `context canceled` can occur when the browser cancels loading; it does not itself mean the proxy crashed. Repeated errors during normal loading or `cannot rewind body after connection loss` require transport investigation.
 
-Běžný proces CA a spouštěcí konfiguraci pouze čte. Pravidla webů zapisuje při explicitním uložení ve správě; bootstrap CA je samostatný zápis. Statistiky a relace neukládá. Build, Go cache a cache prohlížeče nejsou součástí této záruky.
+The normal process only reads the CA and startup configuration. It writes site rules when explicitly saved in settings; CA bootstrap is a separate write. Statistics and sessions are not persisted. Builds, Go caches and browser caches are outside this guarantee.
 
-| Rozhraní | Endpoint | Ochrana |
+| Interface | Endpoint | Protection |
 | --- | --- | --- |
-| Origin X / demo | `GET /__pauseproxy/client.js` | Známá IP |
-| Origin X / demo | `POST /__pauseproxy/session` | Známá IP, JSON, kontrola Origin |
-| Origin X / demo | `POST /__pauseproxy/heartbeat` | Relace svázaná s IP a uživatelem, instance, sekvence |
-| Origin X / demo | `GET /__pauseproxy/status` | Známá IP |
-| PAC server | `GET /proxy.pac`, `/healthz`, `/ca-cert.pem`, `/demo` | Známá IP, pouze veřejná CA |
-| Správa | `GET /api/state` | HTTPS, povolená IP, přesný Host/Origin, heslo v Bearer hlavičce |
-| Správa | `GET/POST /api/sites`, `PATCH/DELETE /api/sites/{domain}` | Token, Host/Origin a JSON |
-| Správa | `GET/PUT /api/bypass-domains` | Totéž; média mimo proxy |
-| Správa | `PATCH /api/limits` | 410: použijte editor webů |
-| Správa | `POST /api/reset` | Totéž + JSON `{}` |
+| X / demo origin | `GET /__pauseproxy/client.js` | Known IP |
+| X / demo origin | `POST /__pauseproxy/session` | Known IP, JSON, Origin check |
+| X / demo origin | `POST /__pauseproxy/heartbeat` | Session bound to IP and user, instance, sequence |
+| X / demo origin | `GET /__pauseproxy/status` | Known IP |
+| PAC server | `GET /proxy.pac`, `/healthz`, `/ca-cert.pem`, `/demo` | Known IP, public CA only |
+| Settings | `GET /api/state` | HTTPS, allowed IP, exact Host/Origin, password in Bearer header |
+| Settings | `GET/POST /api/sites`, `PATCH/DELETE /api/sites/{domain}` | Token, Host/Origin and JSON |
+| Settings | `GET/PUT /api/bypass-domains` | Same; media exceptions |
+| Settings | `PATCH /api/limits` | 410: use the site editor |
+| Settings | `POST /api/reset` | Same, plus JSON `{}` |
 
-Všechna stavová API mají no-store, limit JSON těla 4 KiB (seznamová API pravidel 64 KiB) a mutace nemají CORS. ID relace je náhodný token; po resetu/restartu si klient vytvoří novou a zahodí staré neodeslané dávky. Ztráta klientského API po 10 sekundách vyvolá překryv. Zvýšení limitu obnoví otevřenou kartu při dalším heartbeat; na blokovací stránce použijte obnovení.
+All state APIs use no-store, a 4 KiB JSON body limit (64 KiB for rule list APIs), and no CORS for mutations. The session ID is a random token; after reset/restart, the client creates a new session and discards old unsent batches. Losing the client API for 10 seconds triggers the overlay. Raising the limit restores an open tab at the next heartbeat; reload a blocking page.
 
-## Ověření
+## Verification
 
 ```powershell
 ./scripts/dev.ps1 test
 ./.tools/go/bin/go.exe vet ./...
-# Race detector na Windows potřebuje C compiler; portable varianta:
+# The Windows race detector needs a C compiler; portable option:
 ./scripts/setup.ps1 -WithRaceCompiler
 ./scripts/dev.ps1 race
 ./scripts/dev.ps1 build
 ./dist/pauseproxy.exe --config ./config.local.json
 ```
 
-Na Linuxu s GCC: `go test -race ./...`.
+On Linux with GCC: `go test -race ./...`.
 
-Automatické testy pokrývají souběh, skrytí, expiraci, změny limitů, půlnoc, reset, deduplikaci, IP vazbu, kapacitu, ochranu API, whitelist, kompresi/CSP, chybovou injekci a HTTPS CONNECT s důvěrou k testovací CA. `go vet` kontroluje zdroje.
+Automated tests cover concurrency, hiding, expiration, limit changes, midnight, reset, deduplication, IP binding, capacity, API protection, the allowlist, compression/CSP, injection failures and HTTPS CONNECT with a trusted test CA. `go vet` checks the sources.
 
-Ruční kontrola pro skutečný Chrome/X/telefon: SPA navigace, návrat Zpět, cache/service worker, uspání telefonu, přímá cesta médií a chování při výpadku. Pro audit zápisů použijte Process Monitor s filtrem na `pauseproxy.exe`, spusťte binárku po bootstrapu a sledujte operace WriteFile. Tento audit není nahrazen testem CA souborů.
+Manual checks for real Chrome/X/phone use: SPA navigation, Back, cache/service workers, phone sleep, direct media routing and failure behavior. To audit writes, use Process Monitor filtered to `pauseproxy.exe`, run the binary after bootstrap and inspect WriteFile operations. CA file tests do not replace this audit.
 
-MVP nepředstavuje ochranu proti vědomému obejití: PAC lze vypnout a skript sdílí origin s X. Aktuální X, jeho CSP, domény API i Android vyžadují ruční ověření; proxy nezaručuje blokaci již cachované stránky bez vloženého klienta. OpenWrt balíček spravuje PauseProxy-wrt; trvalé statistiky nejsou implementované.
+The MVP does not prevent deliberate circumvention: PAC can be disabled and the script shares X's origin. Current X, its CSP, API domains and Android require manual verification; the proxy cannot guarantee blocking a cached page without the injected client. PauseProxy-wrt maintains the OpenWrt package; persistent statistics are not implemented.
 
-Klient se vkládá přímo na začátek HTML head s CSP nonce, před skripty webu. DOM sestavuje bez `innerHTML`, takže nevyžaduje výjimku pro Trusted Types. Odesílá heartbeat každých 5 sekund a účtuje pouze viditelnou kartu s fokusem a aktivitou během poslední minuty. Správa ukazuje RAM diagnostiku injekcí, vytvořených relací a přijatých heartbeatů za běh procesu (reset statistik ji nenuluje). Po aktualizaci restartujte aplikaci a obnovte X přes Ctrl+Shift+R. V konzoli má být `[PauseProxy] Klient spuštěn`; pokud není a injekce nepřibývají, ověřte PAC a cache/service worker v čistém profilu.
+The client is injected at the beginning of HTML head with a CSP nonce, before site scripts. It builds the DOM without `innerHTML`, so it needs no Trusted Types exception. It sends a heartbeat every 5 seconds and charges only a visible, focused tab with activity in the last minute. Settings shows in-memory diagnostics for injections, created sessions and received heartbeats over the process lifetime (resetting statistics does not clear these). After updating, restart the application and reload X with Ctrl+Shift+R. The console should show `[PauseProxy] Client started`; if absent and injection counts do not increase, check PAC and cache/service workers in a fresh profile.
 
-Testy klientské aktivity lze spustit s dostupným Node.js: `node --test web/client_test.cjs`. Kontrolují minutovou nečinnost, skutečné versus syntetické interakce, fokus, skrytí, návrat z historie, blokaci a kliknutí pomocí řízených hodin bez minutového čekání.
+Run JavaScript tests with Node.js: `node --test web/client_test.cjs web/admin_test.cjs`. Client tests use controlled clocks to check one-minute inactivity, real versus synthetic interactions, focus, hiding, history restoration, blocking and clicks without waiting a minute. Admin tests check the rule editor, presets, validation, protection of unsaved changes, saving and list actions; no extra packages are needed.
 
-## Nové přihlášení a HTTPS správa
+## Signing in and HTTPS settings
 
-Před spuštěním vyplňte neprázdné `admin_password` v konfiguraci. Prázdná hodnota v příkladu je úmyslná: žádné sdílené výchozí heslo neexistuje. Skutečné heslo necommitujte. `bootstrap-ca` heslo nepotřebuje.
+Set a nonempty `admin_password` in the configuration before startup. The example value is intentionally empty: there is no shared default password. Do not commit the real password. `bootstrap-ca` does not need it.
 
-Před prvním otevřením správy importujte veřejnou CA z `ca_dir/ca-cert.pem` nebo ji stáhněte přes `http://127.0.0.1:9082/ca-cert.pem`. HTTPS správa používá stejnou CA. Heslo se drží jen v paměti stránky; reload nebo odhlášení vyžaduje nové přihlášení.
+Before opening settings for the first time, import the public CA from `ca_dir/ca-cert.pem` or download it from `http://127.0.0.1:9082/ca-cert.pem`. HTTPS settings uses the same CA. The password stays only in page memory; reloading or signing out requires signing in again.
 
-Pro telefon nastavte například `admin_addr: "0.0.0.0:9083"` a `admin_url: "https://192.168.1.50:9083"` s vlastní LAN IP počítače. Do `users` přidejte IP telefonu i PC. Na obou zařízeních používejte přesnou `admin_url`. Firewall povolte pro porty 9080, 9082 a 9083 pouze potřebným zařízením. Úplný příklad a postup instalace CA obsahuje webový návod `/howto#android`.
+For a phone, set, for example, `admin_addr: "0.0.0.0:9083"` and `admin_url: "https://192.168.1.50:9083"`, using your PC's LAN IP. Add both phone and PC IPs to `users`. Use the exact `admin_url` on both devices. Allow firewall access to ports 9080, 9082 and 9083 only for the required devices. The `/howto#android` web guide contains a complete example and CA installation steps.
 
-Správa má taby Overview, Sites & limits, Media exceptions a Connection. Odpočet má formát `m:ss` / `h:mm:ss`; samostatné ozubené kolo otevírá `admin_url/#sites`.
+Settings has Overview, Sites & limits, Media exceptions and Connection tabs. The countdown uses `m:ss` / `h:mm:ss`; a separate gear opens `admin_url/#sites`.
+
+Overview shows today's remaining budget for every configured site and user, including sites without activity. The usage bar shrinks, turns orange at 20% or less and displays Daily limit reached when exhausted. It includes granted extra time. Always blocked, Paused and Scheduled break distinguish rule states. The server's time zone determines the date; the overview refreshes every two seconds. Clicks and visits are hidden in Overview but are still measured and available through the API.
+
+In Sites & limits, **+ Add site** or **✎** opens an editor below the list. **⏸ / ▶** pauses or enables a rule; **🗑** removes it after confirmation. Numeric Grayscale and Extra time inputs appear only when enabled. Domains and suggested media exceptions are under Advanced domains. Switching tabs preserves the draft; Cancel or opening another rule asks before discarding changes.
+
+## Optional grayscale and extra time
+
+For Daily limit rules, the site editor can enable grayscale after a configured number of active minutes (before the daily limit) and independently allow extra time. Both features default to off. Enabling grayscale for the first time suggests two thirds of the limit. Extra time defaults to 3 minutes and 1 use per day; both duration and count can be changed (1–100 uses).
+
+After the limit runs out, the overlay and blocking page offer a button showing the bonus duration and remaining extensions. Extra time is charged only during activity, shared across the site's tabs and domains, and preserves grayscale. It does not override Always blocked or scheduled breaks. Media does not automatically resume after unblocking.
+
+Version 1 rules added `grayscale_enabled`, `grayscale_after_seconds`, `extra_time_enabled`, `extra_time_seconds`, `extra_time_max_uses`. Older files retain their behavior. Client status adds `grayscale`, `extra_time_available`, `extra_time_seconds`, `extra_time_uses_remaining`. `POST /__pauseproxy/extra-time` accepts `session_id`, `instance_id`, `request_id`; the server checks identity and grants extra time atomically. Repeating the ID of a successful request on the same day does not grant another bonus.
+
+Counts and bonus seconds stay only in RAM per user, site and local date. Midnight restores daily availability; reset and restart clear usage and bonuses. Removing and re-adding a site does not restore its use count. Changing the bonus duration affects future grants only; disabling bonuses removes their effect. Changes apply at the next heartbeat. After updating, rebuild and restart the application and reload open sites.
+
+## Web interface styles
+
+Settings, the guide and demo use a local copy of [MVP.css](https://andybrewer.github.io/mvp/) in `web/mvp.css` (v1.18, MIT; license in `web/MVP-LICENSE.txt`). The file is unchanged; layout additions live in `web/app.css`. CSS and the license are embedded in the Go binary; npm, a CDN and network stylesheet loading are unnecessary. When updating MVP, download the CSS and license from upstream and verify all three pages.
+
+## Groups and shared budgets
+
+In Sites & limits, create a group with **+ Add group** (default limit: 15 minutes). In the site editor, select a group and **Shared group budget**, **Group budget + site limit** or **Independent budget**. A shared site spends only the group budget; a capped site is constrained by both its own and the group budget; an independent site is listed in the group but does not spend its time. Each user has separate budgets. Concurrent activity on different sites adds to group usage; multiple tabs for the same site count once.
+
+Grayscale uses the site's own usage today. Extra time is available only for independent or capped budgets; it cannot override an exhausted group and still spends group time. Groups have no separate bonus. Moving between groups or changing modes affects accounting only after saving. Earlier usage remains with the original group; the site's own limit considers the whole day. Renaming or changing a limit does not clear usage.
+
+Deleting a group preserves its sites as independent rules. Shared sites inherit the group's base limit; others retain their own. If a shared site's grayscale threshold is not below the inherited limit, the confirmation warns about this and grayscale is disabled; the threshold remains saved. Overview shows a shared bar and expandable members with their own usage and mode. Group blocking messages include the group name.
+
+Rules are now saved as version 2. Version 1 is migrated in memory without changing behavior; version 2 is written to disk only when rules are explicitly saved. Older binaries cannot read version 2. Statistics, including groups, stay only in RAM; reset, restart and a new local day restore the available base budgets.

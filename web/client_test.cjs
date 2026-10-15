@@ -5,7 +5,7 @@ const vm = require('node:vm');
 
 // Run the complete embedded client with a controlled clock and browser events.
 function fixture(options = {}) {
-  let now = 0, nextTimer = 0, focused = true, offline = false;
+  let now = 0, nextTimer = 0, focused = true, offline = false, reloads = 0;
   const timers = new Map(), requests = [], nodes = [], events = new Map();
   const eventTarget = name => ({
     addEventListener(type, fn) {
@@ -17,19 +17,23 @@ function fixture(options = {}) {
   function node(tag) {
     const n = {...eventTarget(tag), tag, style: {}, isConnected: false, textContent: '',
       setAttribute(key,value) {this[key]=value;},
+      removeAttribute(key) {delete this[key];}, hasAttribute(key) {return Object.hasOwn(this,key);},
       remove() {this.isConnected=false;},
       appendChild(child) {child.isConnected = true; return child;},
       attachShadow() {return node('shadow');}
     };
+    n.listeners = new Map(); const register = n.addEventListener; n.addEventListener = (type, fn) => {n.listeners.set(type, fn); register(type, fn);};
     nodes.push(n); return n;
   }
   const document = {...eventTarget('document'), visibilityState: 'visible',
     hasFocus: () => focused, createElement: node, body: node('body'),
     documentElement: node('html'), querySelectorAll: () => []};
-  const status = {instance_id: 'instance', remaining_seconds: 100, warning_seconds: 30, blocked: false};
-  const window = {...eventTarget('window'), fetch: async (url, requestOptions) => {
+  if(options.blockDocument) document.documentElement.setAttribute('data-pauseproxy-blocked','');
+  const status = {instance_id: 'instance', remaining_seconds: 100, warning_seconds: 30, blocked: !!options.blockDocument};
+  const window = {crypto:{randomUUID:()=> 'request-1'},...eventTarget('window'), fetch: async (url, requestOptions) => {
     if (offline) throw Error("offline");
     const body = JSON.parse(requestOptions.body); requests.push({url, body});
+    if(url.endsWith('/extra-time')) { if(options.extraFailure?.()) throw Error('Lost response'); status.blocked=false;status.grayscale=true;status.extra_time_available=false;status.remaining_seconds=180; }
     return {ok: true, status: 200, json: async () => url.endsWith('/session')
       ? {session_id: 'session', instance_id: 'instance', admin_url:options.adminURL || 'https://192.168.1.50:9083'} : status};
   }};
@@ -37,7 +41,7 @@ function fixture(options = {}) {
     const id = ++nextTimer; timers.set(id, {fn, at: now + delay, delay, interval}); return id;
   }
   vm.runInNewContext(readFileSync(__dirname + '/client.js', 'utf8'), {
-    URL, window, document, navigator: options.navigator || {}, location: {origin: 'https://x.com', reload() {}},
+    URL, window, document, navigator: options.navigator || {}, location: {origin: 'https://x.com', reload() {reloads++;}},
     performance: {now: () => now}, Date: {now: () => now},
     console: {info() {}, warn() {}}, AbortSignal: {timeout() {}},
     setTimeout: (fn, delay) => timer(fn, delay), clearTimeout: id => timers.delete(id), clearInterval: id => timers.delete(id),
@@ -45,7 +49,7 @@ function fixture(options = {}) {
   });
   async function flush() {for (let i = 0; i < 20; i++) await Promise.resolve();}
   return {
-    requests, status, nodes,
+    requests, status, nodes, reloads:()=>reloads,
     offline: value => {offline = value;},
     lastBeat: () => requests.filter(r => r.url.endsWith('/heartbeat')).at(-1).body,
     badge: () => nodes.find(n => n.className === 'badge-text').textContent,
@@ -183,4 +187,43 @@ test('offline overlay keeps settings accessible and recovers on a heartbeat', as
   const links = f.nodes.filter(n => n.className === 'settings-link');
   assert.equal(links.length, 2);
   for (const link of links) assert.equal(link.href, 'http://192.168.1.50:9083/#sites');
+});
+
+test('grayscale follows server state and clears on block, offline and removal',async()=>{
+ const f=fixture();await f.advance(0);f.status.grayscale=true;await f.advance(5000);
+ assert.ok(f.document.documentElement.hasAttribute('data-pauseproxy-grayscale'));
+ f.status.blocked=true;f.status.extra_time_available=true;f.status.extra_time_seconds=180;f.status.extra_time_uses_remaining=2;await f.advance(5000);
+ assert.ok(!f.document.documentElement.hasAttribute('data-pauseproxy-grayscale'));
+ assert.ok(f.nodes.some(n=>n.tag==='button'&&!n.hidden&&n.textContent==='Add 3:00'));
+ f.status.blocked=false;await f.advance(5000);assert.ok(f.document.documentElement.hasAttribute('data-pauseproxy-grayscale'));
+ f.offline(true);await f.advance(15000);assert.ok(!f.document.documentElement.hasAttribute('data-pauseproxy-grayscale'));
+ f.offline(false);f.status.tracking=false;await f.advance(5000);assert.ok(!f.document.documentElement.hasAttribute('data-pauseproxy-grayscale'));
+});
+
+test('bonus retry keeps request ID, resumes activity and remains grayscale',async()=>{
+ let fail=true;const f=fixture({extraFailure:()=>fail});await f.advance(0);
+ Object.assign(f.status,{blocked:true,extra_time_available:true,extra_time_seconds:180,extra_time_uses_remaining:1});await f.advance(5000);
+ const button=f.nodes.find(n=>n.tag==='button'&&n.textContent==='Add 3:00');
+ await button.listeners.get('click')();assert.equal(button.disabled,false);assert.ok(f.nodes.some(n=>n.textContent==='Lost response'));
+ fail=false;await button.listeners.get('click')();await f.advance(1100);
+ const grants=f.requests.filter(r=>r.url.endsWith('/extra-time'));assert.equal(grants.length,2);assert.equal(grants[0].body.request_id,grants[1].body.request_id);
+ assert.ok(f.document.documentElement.hasAttribute('data-pauseproxy-grayscale'));assert.equal(f.lastBeat().visible,true);assert.equal(f.reloads(),0);
+});
+test('server block document reloads once after bonus',async()=>{
+ const f=fixture({blockDocument:true});await f.advance(0);Object.assign(f.status,{extra_time_available:true,extra_time_seconds:180,extra_time_uses_remaining:1});await f.advance(5000);
+ const button=f.nodes.find(n=>n.tag==='button'&&n.textContent==='Add 3:00');await button.listeners.get('click')();assert.equal(f.reloads(),1);
+ assert.ok(!f.document.documentElement.hasAttribute('data-pauseproxy-grayscale'));
+});
+
+test('expired budget after reload keeps the break screen and never reloads automatically', async()=>{
+ const f=fixture({blockDocument:true});await f.advance(15000);
+ assert.equal(f.nodes.find(n=>n.className==='wall').style.display,'flex');
+ assert.equal(f.reloads(),0);
+ f.offline(true);await f.advance(15000);
+ assert.equal(f.nodes.find(n=>n.className==='wall').style.display,'flex');
+ f.offline(false);await f.advance(5000);
+ assert.equal(f.nodes.find(n=>n.className==='wall').style.display,'flex');
+ assert.equal(f.reloads(),0);
+ assert.ok(f.nodes.some(n=>n.tag==='style'));
+ assert.ok(!f.nodes.some(n=>n.href?.endsWith('/client.css')));
 });

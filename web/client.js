@@ -16,8 +16,18 @@
     parent.appendChild(node);
     return node;
   }
-  const css = element('link', '', '', shadow);
-  css.rel = 'stylesheet'; css.href = base + 'client.css';
+  const css = element('style', '', '', shadow);
+  css.nonce = document.currentScript?.nonce || '';
+  css.textContent = /*__PAUSEPROXY_CSS__*/ "";
+  const grayscaleCSS = document.createElement('link');
+  grayscaleCSS.rel = 'stylesheet'; grayscaleCSS.href = base + 'grayscale.css';
+  (document.head || document.documentElement).appendChild(grayscaleCSS);
+  function grayscale(on) {
+    if (on) document.documentElement.setAttribute('data-pauseproxy-grayscale', '');
+    else document.documentElement.removeAttribute('data-pauseproxy-grayscale');
+  }
+  const blockDocument = document.documentElement.hasAttribute('data-pauseproxy-blocked');
+  let extraPending = false, extraRequest, extraSequence = 0;
   const badge = element('div', 'badge', '', shadow);
   const badgeText = element('span', 'badge-text', 'PauseProxy · connecting…', badge);
   function settingsLink(parent) {
@@ -31,8 +41,25 @@
   const section = element('section', '', '', wall);
   element('p', '', 'PAUSEPROXY', section);
   element('h1', '', 'Time for a break', section);
-  const reason = element('p', 'reason', '', section);
+  const reason = element('p', 'reason', 'Checking the remaining time…', section);
   const wallSettings = settingsLink(section);
+  const extra = element('button', '', '', section);
+  extra.hidden = true;
+  const extraInfo = element('p', '', '', section);
+  const extraError = element('p', '', '', section);
+  extraError.setAttribute('role', 'status');
+  extra.addEventListener('click', async () => {
+    if (extraPending || !session || !lastStatus?.extra_time_available) return;
+    extraPending = true; extra.disabled = true; extraError.textContent = '';
+    extraRequest ||= session.session_id + ':' + (++extraSequence);
+    try {
+      const result = await post('extra-time', {session_id:session.session_id, instance_id:session.instance_id, request_id:extraRequest});
+      extraRequest = null; lastOK = Date.now(); paint(result);
+      if (blockDocument && !result.blocked) return;
+      activity(); tick();
+    } catch (error) { extraError.textContent = error.message; }
+    finally { extraPending = false; extra.disabled = false; }
+  });
   const reload = element('button', '', 'Reload page', section);
   reload.addEventListener('click', () => location.reload());
   window.__pauseproxyStarted = true;
@@ -81,6 +108,12 @@
   function paint(status, offline = false) {
     lastStatus = status; unavailable = offline;
     blocked = offline || status.blocked;
+    grayscale(!blocked && status.grayscale && !blockDocument);
+    extra.hidden = !blocked || offline || !status.extra_time_available;
+    extra.disabled = extraPending;
+    extra.textContent = `Add ${formatTime(status.extra_time_seconds)}`;
+    extraInfo.textContent = !extra.hidden ? `Extensions remaining: ${status.extra_time_uses_remaining}` : '';
+    if (blockDocument && !offline && status.tracking !== false && !status.blocked) location.reload();
     wall.style.display = blocked ? 'flex' : 'none';
     reason.textContent = offline ? 'PauseProxy is unavailable. Waiting for a connection.' : status.reason;
     const paused = !blocked && !active() ? ' · paused' : '';
@@ -138,7 +171,7 @@
   window.addEventListener('pageshow', () => {pagePresent = true; activity(); tick();});
   window.addEventListener('pagehide', () => {pagePresent = false; clearTimeout(idleTimer); if(!stopped && session && !pending) {lastBeatSent=performance.now();fetchRequest(base + 'heartbeat' + selection,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...session,sequence:++sequence,visible:false,click_delta:clicks}),keepalive:true}).catch(()=>{});clicks=0;}});
   function mount() {(document.body || document.documentElement).appendChild(root);tick();}
-  function stop() {stopped = true;blocked = false;clearTimeout(idleTimer);clearTimeout(beatTimer);clearInterval(heartbeatTimer);clearInterval(healthTimer);root.remove();}
+  function stop() {grayscale(false);grayscaleCSS.remove();stopped = true;blocked = false;clearTimeout(idleTimer);clearTimeout(beatTimer);clearInterval(heartbeatTimer);clearInterval(healthTimer);root.remove();}
  armIdleTimer(); mount(); heartbeatTimer = setInterval(tick, 5000);
   healthTimer = setInterval(() => {if (Date.now()-lastOK >= 10000) paint({},true); if (!root.isConnected) (document.body || document.documentElement).appendChild(root);}, 1000);
 })();

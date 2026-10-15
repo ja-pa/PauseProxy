@@ -65,7 +65,7 @@ func TestPersistenceMigrationAndFailure(t *testing.T) {
 	if e != nil || len(got.Sites) != 0 {
 		t.Fatal("empty rules resurrected", e)
 	}
-	for _, bad := range []string{"{}", `{"version":2,"sites":[]}`, `{"version":1,"sites":[],"unexpected":1}`, `{"version":1,"sites":[]} {}`} {
+	for _, bad := range []string{"{}", `{"version":3,"sites":[]}`, `{"version":1,"sites":[],"unexpected":1}`, `{"version":1,"sites":[]} {}`} {
 		if e = os.WriteFile(path, []byte(bad), 0600); e != nil {
 			t.Fatal(e)
 		}
