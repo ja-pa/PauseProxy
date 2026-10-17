@@ -17,7 +17,7 @@ func TestVersionOneMigrationIsReadOnlyUntilSave(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d.Version != 2 || len(d.Groups) != 0 || d.Sites[0].BudgetMode != "independent" {
+	if d.Sites[0].BlurEnabled || d.Sites[0].BlurAfter != 0 || d.Version != 2 || len(d.Groups) != 0 || d.Sites[0].BudgetMode != "independent" {
 		t.Fatal(d)
 	}
 	got, _ := os.ReadFile(p)
@@ -68,6 +68,8 @@ func TestRemoveGroupRetainsSharedThresholdThatNoLongerFits(t *testing.T) {
 	d.Groups = []Group{{ID: "fun", Name: "Fun", Seconds: 60}}
 	d.Sites[0].GroupID = "fun"
 	d.Sites[0].BudgetMode = "shared"
+	d.Sites[0].BlurEnabled = true
+	d.Sites[0].BlurAfter = 120
 	d.Sites[0].GrayscaleEnabled = true
 	d.Sites[0].GrayscaleAfter = 120
 	if err := d.Validate(); err != nil {
@@ -79,7 +81,7 @@ func TestRemoveGroupRetainsSharedThresholdThatNoLongerFits(t *testing.T) {
 	if err := d.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if d.Sites[0].GrayscaleEnabled || d.Sites[0].GrayscaleAfter != 120 || d.Sites[0].Seconds != 60 {
+	if d.Sites[0].BlurEnabled || d.Sites[0].BlurAfter != 120 || d.Sites[0].GrayscaleEnabled || d.Sites[0].GrayscaleAfter != 120 || d.Sites[0].Seconds != 60 {
 		t.Fatal(d.Sites[0])
 	}
 }

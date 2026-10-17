@@ -5,6 +5,7 @@ const vm = require('node:vm');
 
 // Run the complete embedded client with a controlled clock and browser events.
 function fixture(options = {}) {
+  let focusNode, challengeNumber = 0; const challenges = new Map();
   let now = 0, nextTimer = 0, focused = true, offline = false, reloads = 0;
   const timers = new Map(), requests = [], nodes = [], events = new Map();
   const eventTarget = name => ({
@@ -20,6 +21,7 @@ function fixture(options = {}) {
       removeAttribute(key) {delete this[key];}, hasAttribute(key) {return Object.hasOwn(this,key);},
       remove() {this.isConnected=false;},
       appendChild(child) {child.isConnected = true; return child;},
+      focus() {focusNode = this;},
       attachShadow() {return node('shadow');}
     };
     n.listeners = new Map(); const register = n.addEventListener; n.addEventListener = (type, fn) => {n.listeners.set(type, fn); register(type, fn);};
@@ -29,10 +31,15 @@ function fixture(options = {}) {
     hasFocus: () => focused, createElement: node, body: node('body'),
     documentElement: node('html'), querySelectorAll: () => []};
   if(options.blockDocument) document.documentElement.setAttribute('data-pauseproxy-blocked','');
-  const status = {instance_id: 'instance', remaining_seconds: 100, warning_seconds: 30, blocked: !!options.blockDocument};
+  const status = {instance_id: 'instance', remaining_seconds: 100, warning_seconds: 30, blocked: !!options.blockDocument, extra_time_method:options.method || 'click'};
   const window = {crypto:{randomUUID:()=> 'request-1'},...eventTarget('window'), fetch: async (url, requestOptions) => {
     if (offline) throw Error("offline");
     const body = JSON.parse(requestOptions.body); requests.push({url, body});
+    if(url.includes('/extra-time/challenge')) {
+      if (options.challengeFailure?.()) throw Error('Lost challenge response');
+      if (!challenges.has(body.request_id)) challenges.set(body.request_id, {challenge_id:'challenge-'+(++challengeNumber),method:status.extra_time_method,a:2+challengeNumber,b:4});
+      return {ok:true,status:200,json:async()=>challenges.get(body.request_id)};
+    }
     if(url.endsWith('/extra-time')) { if(options.extraFailure?.()) throw Error('Lost response'); status.blocked=false;status.grayscale=true;status.extra_time_available=false;status.remaining_seconds=180; }
     return {ok: true, status: 200, json: async () => url.endsWith('/session')
       ? {session_id: 'session', instance_id: 'instance', admin_url:options.adminURL || 'https://192.168.1.50:9083'} : status};
@@ -49,7 +56,8 @@ function fixture(options = {}) {
   });
   async function flush() {for (let i = 0; i < 20; i++) await Promise.resolve();}
   return {
-    requests, status, nodes, reloads:()=>reloads,
+    requests, status, nodes, reloads:()=>reloads, focusNode:()=>focusNode,
+    control: name => nodes.find(n => n.className === name),
     offline: value => {offline = value;},
     lastBeat: () => requests.filter(r => r.url.endsWith('/heartbeat')).at(-1).body,
     badge: () => nodes.find(n => n.className === 'badge-text').textContent,
@@ -226,4 +234,100 @@ test('expired budget after reload keeps the break screen and never reloads autom
  assert.equal(f.reloads(),0);
  assert.ok(f.nodes.some(n=>n.tag==='style'));
  assert.ok(!f.nodes.some(n=>n.href?.endsWith('/client.css')));
+});
+
+for (const gray of [false, true]) for (const blur of [false, true]) {
+ test(`independent filters grayscale=${gray} blur=${blur}`, async () => {
+  const f = fixture(); f.status.grayscale = gray; f.status.blur = blur; await f.advance(0);
+  assert.equal(f.document.documentElement.hasAttribute('data-pauseproxy-grayscale'), gray);
+  assert.equal(f.document.documentElement.hasAttribute('data-pauseproxy-blur'), blur);
+ });
+}
+test('blur clears on block, offline, removal and restores after bonus', async () => {
+ const f = fixture(); f.status.blur = true; await f.advance(0);
+ const on = () => f.document.documentElement.hasAttribute('data-pauseproxy-blur');
+ assert.ok(on()); f.status.blocked = true; f.status.extra_time_available = true; await f.advance(5000); assert.ok(!on());
+ const extra = f.nodes.find(n => n.tag === 'button' && n.listeners.has('click'));
+ await extra.listeners.get('click')(); assert.ok(on());
+ f.offline(true); await f.advance(15000); assert.ok(!on());
+ f.offline(false); await f.advance(5000); assert.ok(on());
+ f.status.tracking = false; await f.advance(5000); assert.ok(!on());
+ assert.equal(f.nodes.find(n => n.href?.endsWith('/blur.css')).isConnected, false);
+});
+test('blocking document never blurs even if server flag is set', async () => {
+ const f = fixture({blockDocument:true}); f.status.blur = true; await f.advance(0);
+ assert.ok(!f.document.documentElement.hasAttribute('data-pauseproxy-blur'));
+});
+
+async function challengeFixture(method, options={}) {
+ const f=fixture({...options,method});Object.assign(f.status,{blocked:true,extra_time_available:true,extra_time_seconds:180,extra_time_uses_remaining:3});await f.advance(0);
+ await f.nodes.find(n=>n.tag==='button').listeners.get('click')();await f.advance(0);return f;
+}
+async function press(f,name,event='click') {await f.control(name).listeners.get(event)({preventDefault(){}});await f.advance(0);}
+test('math unlocks Continue only for correct answer; preserves task on heartbeats and requires new task next time',async()=>{
+ const f=await challengeFixture('math');const problem=f.control('challenge-problem').textContent;
+ assert.equal(f.control('continue-challenge').hidden,false);assert.equal(f.control('challenge-continue').disabled,true);
+ f.control('challenge-answer').value='999';await press(f,'math-challenge','submit');assert.equal(f.control('challenge-continue').disabled,true);
+ assert.equal(f.requests.filter(r=>r.url.endsWith('/extra-time')).length,0);
+ await f.advance(5000);assert.equal(f.control('challenge-problem').textContent,problem);
+ const [a,b]=problem.match(/\d+/g).map(Number);f.control('challenge-answer').value=String(a*b);await press(f,'math-challenge','submit');
+ assert.equal(f.control('challenge-continue').disabled,false);assert.equal(f.focusNode(),f.control('challenge-continue'));
+ await press(f,'challenge-continue');const grant=f.requests.find(r=>r.url.endsWith('/extra-time'));assert.equal(grant.body.answer,a*b);assert.ok(grant.body.challenge_id);
+ assert.equal(f.control('continue-challenge').hidden,true);assert.equal(f.control('challenge-answer').value,'');
+ Object.assign(f.status,{blocked:true,extra_time_available:true,extra_time_uses_remaining:2});await f.advance(5000);
+ await f.nodes.find(n=>n.tag==='button').listeners.get('click')();await f.advance(0);
+ assert.notEqual(f.control('challenge-problem').textContent,problem);assert.equal(f.control('challenge-continue').disabled,true);
+});
+test('reflection needs valid text and ten visible seconds, clears text on success',async()=>{
+ const f=await challengeFixture('reflection');assert.equal(f.requests.filter(r=>r.url.includes('/challenge')).length,0);
+ f.control('challenge-intention').value='aaaa bbbb cccc';await press(f,'challenge-intention','input');
+ await press(f,'challenge-start');await f.advance(5000);assert.equal(f.control('challenge-countdown').textContent,'5 s');
+ f.document.visibilityState='hidden';await f.emit('document','visibilitychange');await f.advance(20000);assert.equal(f.control('challenge-countdown').textContent,'5 s');
+ f.document.visibilityState='visible';await f.emit('document','visibilitychange');await f.advance(5000);assert.equal(f.control('challenge-countdown').textContent,'0 s');
+ assert.equal(f.control('challenge-continue').disabled,true);
+ f.control('challenge-intention').value='Chci odpovědět na zprávu';await press(f,'challenge-intention','input');assert.equal(f.control('challenge-continue').disabled,false);
+ await press(f,'challenge-continue');assert.equal(f.control('challenge-intention').value,'');
+ assert.equal(f.requests.find(r=>r.url.endsWith('/extra-time')).body.reflection,'Chci odpovědět na zprávu');
+});
+test('cancel discards reflection and timer without granting; method change and page exit reset tasks',async()=>{
+ const f=await challengeFixture('reflection');f.control('challenge-intention').value='Chci odpovědět na zprávu';await press(f,'challenge-start');await f.advance(1000);await press(f,'challenge-cancel');
+ assert.equal(f.control('challenge-intention').value,'');assert.equal(f.control('continue-challenge').hidden,true);assert.equal(f.requests.filter(r=>r.url.endsWith('/extra-time')).length,0);
+ f.status.extra_time_method='math';await f.advance(5000);await f.nodes.find(n=>n.tag==='button').listeners.get('click')();await f.advance(0);assert.equal(f.control('continue-challenge').hidden,false);
+ f.status.extra_time_method='reflection';await f.advance(5000);assert.equal(f.control('continue-challenge').hidden,true);
+ await f.nodes.find(n=>n.tag==='button').listeners.get('click')();await f.advance(0);await f.emit('window','pagehide');assert.equal(f.control('continue-challenge').hidden,true);
+});
+test('challenge creation failures can retry, bonus failures keep same request and answer',async()=>{
+ let failures=1;const f=await challengeFixture('math',{challengeFailure:()=>failures-->0});
+ assert.equal(f.control('challenge-retry').hidden,false);await press(f,'challenge-retry');assert.equal(f.control('challenge-retry').hidden,true);
+ const p=f.control('challenge-problem').textContent;const [a,b]=p.match(/\d+/g).map(Number);
+ f.control('challenge-answer').value=String(a*b);await press(f,'math-challenge','submit');
+ await f.advance(5000);assert.equal(f.control('challenge-answer').value,String(a*b));
+ await press(f,'challenge-cancel');assert.equal(f.control('challenge-answer').value,'');
+ let lost=1;const g=await challengeFixture('math',{extraFailure:()=>lost-->0});const [x,y]=g.control('challenge-problem').textContent.match(/\d+/g).map(Number);
+ g.control('challenge-answer').value=String(x*y);await press(g,'math-challenge','submit');await press(g,'challenge-continue');assert.equal(g.control('continue-challenge').hidden,false);
+ await press(g,'challenge-continue');const grants=g.requests.filter(r=>r.url.endsWith('/extra-time'));assert.equal(grants.length,2);assert.deepEqual(grants[0].body,grants[1].body);
+});
+test('reflection network failure retries Start pause without losing intention',async()=>{
+ let lost=1;const f=await challengeFixture('reflection',{challengeFailure:()=>lost-->0});f.control('challenge-intention').value='Chci odpovědět na zprávu';await press(f,'challenge-start');
+ assert.equal(f.control('challenge-start').disabled,false);assert.equal(f.control('challenge-intention').value,'Chci odpovědět na zprávu');assert.match(f.control('challenge-feedback').textContent,/Lost challenge/);
+ await press(f,'challenge-start');await f.advance(10000);assert.equal(f.control('challenge-continue').disabled,false);
+});
+test('challenge flow on a blocking document reloads only after completed grant',async()=>{
+ const f=await challengeFixture('math',{blockDocument:true});assert.equal(f.reloads(),0);
+ const [a,b]=f.control('challenge-problem').textContent.match(/\d+/g).map(Number);f.control('challenge-answer').value=String(a*b);await press(f,'math-challenge','submit');assert.equal(f.reloads(),0);
+ await press(f,'challenge-continue');assert.equal(f.reloads(),1);
+});
+
+test('eligibility loss and a new server instance invalidate the open task',async()=>{
+ for (const change of ['availability','instance','tracking']) {
+  const f=await challengeFixture('reflection');f.control('challenge-intention').value='Chci odpovědět na zprávu';
+  if(change==='availability') f.status.extra_time_available=false;
+  if(change==='instance') f.status.instance_id='new-instance';
+  if(change==='tracking') f.status.tracking=false;
+  await f.advance(5000);assert.equal(f.control('continue-challenge').hidden,true);assert.equal(f.control('challenge-intention').value,'');
+ }
+});
+test('five-minute client challenge expiry clears proof and allows a new task',async()=>{
+ const f=await challengeFixture('math');await f.advance(300000);assert.equal(f.control('continue-challenge').hidden,true);
+ assert.equal(f.control('challenge-answer').value,'');assert.equal(f.requests.filter(r=>r.url.endsWith('/extra-time')).length,0);
 });

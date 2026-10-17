@@ -79,7 +79,12 @@ func run() error {
 	store.ConfigureRules(rules, c.SitesFile)
 	log.SetLevel(log.ErrorLevel) // No access logging; no file output.
 	a := &httpapi.API{Config: c, State: store, PublicCert: public}
-	p, e := proxy.NewProxy(&proxy.Options{Addr: c.ProxyAddr, StreamLargeBodies: 1024 * 1024, NewCaFunc: func() (cert.CA, error) { return ca, nil }})
+	upstream, e := mitm.NewUpstreamTransport()
+	if e != nil {
+		return e
+	}
+	defer upstream.CloseIdleConnections()
+	p, e := proxy.NewProxy(&proxy.Options{Addr: c.ProxyAddr, StreamLargeBodies: 1024 * 1024, UpstreamTransport: upstream, NewCaFunc: func() (cert.CA, error) { return ca, nil }})
 	if e != nil {
 		return e
 	}

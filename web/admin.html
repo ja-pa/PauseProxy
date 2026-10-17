@@ -18,10 +18,13 @@
     <div><h2>Sites &amp; daily limits</h2><p>Set individual budgets or share time across a group of sites.</p></div>
     <button id="add-site" type="button" aria-controls="site-editor" aria-expanded="false">+ Add site</button>
   </div>
+  <div class="sites-user-field"><label for="sites-user">Statistics for user</label><select id="sites-user" disabled aria-describedby="sites-reset-help"></select></div>
+  <small id="sites-reset-help">Reset clears today’s statistics for the selected user and site. Group usage stays recorded.</small>
+  <p id="sites-live-error" class="error" role="status"></p>
   <p id="sites-error" class="error" role="alert"></p>
   <p id="notice" class="notice" role="status"></p>
   <div class="table-wrap"><table class="sites-table">
-    <thead><tr><th>Site</th><th>Daily limit</th><th>Access</th><th>Status</th><th>Actions</th></tr></thead>
+    <thead><tr><th>Site</th><th>Daily limit</th><th>Access</th><th>Status</th><th>Time remaining</th><th>Actions</th></tr></thead>
     <tbody id="sites"></tbody>
   </table></div>
 
@@ -60,25 +63,40 @@
             <div id="budget-mode-field"><label for="budget-mode">Budget</label><select id="budget-mode"><option value="shared">Shared group budget</option><option value="capped">Group budget + site limit</option><option value="independent">Independent budget</option></select></div>
           </div>
           <p id="budget-help"></p>
-          <div class="grid">
-            <div><label for="mode">Rule</label><select id="mode"><option value="limit">Daily limit</option><option value="block">Always block</option></select></div>
-            <div id="minutes-field"><label for="minutes">Daily budget (minutes)</label><input id="minutes" type="number" min="0.016666" max="1440" step="any" value="15" aria-describedby="minutes-error"><p id="minutes-error" class="field-error error" hidden></p></div>
-          </div>
+          <label class="check-label"><input id="always-block" type="checkbox" aria-controls="optional-limits" aria-expanded="true" aria-describedby="access-help"> Always block</label>
           <p id="access-help">Active time is shared across the site's domains and browser tabs.</p>
         </section>
 
         <section id="optional-limits" class="editor-section" aria-labelledby="options-heading">
-          <h4 id="options-heading">Daily limit options</h4>
+          <h4 id="options-heading">Daily limit</h4>
+          <div id="minutes-field" class="daily-budget-field"><label for="minutes">Daily budget (minutes)</label><input id="minutes" type="number" min="0.016666" max="1440" step="any" value="15" aria-describedby="minutes-error"><p id="minutes-error" class="field-error error" hidden></p></div>
+          <p id="shared-budget" class="shared-budget" hidden></p>
+          <figure id="limit-preview" class="limit-preview" aria-labelledby="preview-title" aria-describedby="preview-note">
+            <figcaption id="preview-title">Your daily timeline</figcaption>
+            <p id="preview-summary" class="preview-summary"></p>
+            <div id="preview-chart">
+              <div id="preview-track" class="preview-track" aria-hidden="true"></div>
+              <div class="preview-axis" aria-hidden="true"><span>0</span><span id="preview-end"></span></div>
+              <ul id="preview-legend" class="preview-legend"></ul>
+            </div>
+            <p id="preview-message" class="preview-message" hidden></p>
+            <p id="preview-note" class="preview-note">Preview of these settings, not today's usage.</p>
+          </figure>
           <div class="grid option-grid">
             <section class="limit-option" aria-labelledby="grayscale-label">
               <label class="check-label" id="grayscale-label"><input id="grayscale-enabled" type="checkbox" aria-controls="grayscale-fields" aria-expanded="false"> Grayscale</label>
               <p>Make the site less inviting before its daily budget runs out.</p>
               <div id="grayscale-fields" hidden><label for="grayscale-minutes">Start after active minutes</label><input id="grayscale-minutes" type="number" min="0.016666" step="any" disabled aria-describedby="grayscale-help grayscale-minutes-error"><small id="grayscale-help">Must be earlier than the daily budget.</small><p id="grayscale-minutes-error" class="field-error error" hidden></p></div>
             </section>
+            <section class="limit-option" aria-labelledby="blur-label">
+              <label class="check-label" id="blur-label"><input id="blur-enabled" type="checkbox" aria-controls="blur-fields" aria-expanded="false"> Blur images/videos</label>
+              <p>Blur images and videos by 8 px after its own active-time threshold.</p>
+              <div id="blur-fields" hidden><label for="blur-minutes">Start after active minutes</label><input id="blur-minutes" type="number" min="0.016666" step="any" disabled aria-describedby="blur-help blur-minutes-error"><small id="blur-help">Must be earlier than the daily budget.</small><p id="blur-minutes-error" class="field-error error" hidden></p></div>
+            </section>
             <section class="limit-option" aria-labelledby="extra-label"><p id="shared-extra-help" hidden>Extra time requires a site limit. The group budget cannot be extended.</p>
               <label class="check-label" id="extra-label"><input id="extra-enabled" type="checkbox" aria-controls="extra-fields" aria-expanded="false"> Extra time</label>
               <p>Offer a limited number of extensions when the daily budget runs out.</p>
-              <div id="extra-fields" hidden><label for="extra-minutes">Minutes per extension</label><input id="extra-minutes" type="number" min="0.016666" max="1440" step="any" value="3" disabled aria-describedby="extra-minutes-error"><p id="extra-minutes-error" class="field-error error" hidden></p><label for="extra-uses">Extensions per day</label><input id="extra-uses" type="number" min="1" max="100" step="1" value="1" disabled aria-describedby="extra-uses-error"><p id="extra-uses-error" class="field-error error" hidden></p><small>Extra time keeps grayscale and does not bypass scheduled breaks.</small></div>
+              <div id="extra-fields" hidden><label for="extra-method">Continue method</label><select id="extra-method"><option value="click">Click to extend</option><option value="math">Math</option><option value="reflection">Reflection + 10-second pause</option></select><label for="extra-minutes">Minutes per extension</label><input id="extra-minutes" type="number" min="0.016666" max="1440" step="any" value="3" disabled aria-describedby="extra-minutes-error"><p id="extra-minutes-error" class="field-error error" hidden></p><label for="extra-uses">Extensions per day</label><input id="extra-uses" type="number" min="1" max="100" step="1" value="1" disabled aria-describedby="extra-uses-error"><p id="extra-uses-error" class="field-error error" hidden></p><small>Extra time keeps grayscale and media blur and does not bypass scheduled breaks.</small></div>
             </section>
           </div>
         </section>

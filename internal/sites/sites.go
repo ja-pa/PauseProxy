@@ -16,8 +16,11 @@ import (
 type Site struct {
 	GroupID          string   `json:"group_id"`
 	BudgetMode       string   `json:"budget_mode"`
+	BlurEnabled      bool     `json:"blur_enabled"`
+	BlurAfter        int      `json:"blur_after_seconds"`
 	GrayscaleEnabled bool     `json:"grayscale_enabled"`
 	GrayscaleAfter   int      `json:"grayscale_after_seconds"`
+	ExtraMethod      string   `json:"extra_time_method"`
 	ExtraEnabled     bool     `json:"extra_time_enabled"`
 	ExtraSeconds     int      `json:"extra_time_seconds"`
 	ExtraMaxUses     int      `json:"extra_time_max_uses"`
@@ -63,6 +66,9 @@ func (d *Document) RemoveGroup(id string) error {
 		}
 		if s.BudgetMode == "shared" {
 			s.Seconds = g.Seconds
+			if s.BlurAfter >= s.Seconds {
+				s.BlurEnabled = false
+			}
 			if s.GrayscaleAfter >= s.Seconds {
 				s.GrayscaleEnabled = false
 			}
@@ -207,6 +213,12 @@ func (d *Document) Validate() error {
 		if s.BudgetMode != "shared" && s.BudgetMode != "capped" && s.BudgetMode != "independent" {
 			return fmt.Errorf("invalid budget mode")
 		}
+		if s.ExtraMethod == "" {
+			s.ExtraMethod = "click"
+		}
+		if s.ExtraMethod != "click" && s.ExtraMethod != "math" && s.ExtraMethod != "reflection" {
+			return fmt.Errorf("invalid extra time method")
+		}
 		if s.ExtraSeconds == 0 {
 			s.ExtraSeconds = 180
 		}
@@ -215,6 +227,9 @@ func (d *Document) Validate() error {
 		}
 		if s.ExtraSeconds < 1 || s.ExtraSeconds > 86400 || s.ExtraMaxUses < 1 || s.ExtraMaxUses > 100 {
 			return fmt.Errorf("invalid extra time settings")
+		}
+		if s.BlurEnabled && (s.BlurAfter < 1 || s.BlurAfter > 86400 || (s.BudgetMode != "shared" && s.BlurAfter >= s.Seconds)) {
+			return fmt.Errorf("blur threshold must be between 1 second and 24 hours and before the site budget")
 		}
 		if s.GrayscaleEnabled && (s.GrayscaleAfter < 1 || s.GrayscaleAfter > 86400 || (s.BudgetMode != "shared" && s.GrayscaleAfter >= s.Seconds)) {
 			return fmt.Errorf("grayscale threshold must be between 1 second and 24 hours")

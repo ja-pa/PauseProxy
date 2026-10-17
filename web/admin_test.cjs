@@ -13,13 +13,14 @@ function fixture(initialSites = []) {
     const listeners = new Map();
     const n = {tag, attrs, children: [], dataset: {}, hidden: 'hidden' in attrs,
       disabled: 'disabled' in attrs, checked: 'checked' in attrs, value: attrs.value || '',
-      type: attrs.type || '', textContent: '', className: '', isConnected: true,
+      style: {}, type: attrs.type || '', textContent: '', className: '', isConnected: true,
       append(...children) { this.children.push(...children); },
       replaceChildren(...children) { this.children = children; },
       setAttribute(k, v) { this.attrs[k] = String(v); },
       getAttribute(k) { return this.attrs[k] ?? null; },
       removeAttribute(k) { delete this.attrs[k]; },
-      addEventListener(k, fn) { listeners.set(k, fn); },
+      addEventListener(k, fn) { if (!listeners.has(k)) listeners.set(k, []); listeners.get(k).push(fn); },
+      emit(k) { for (const fn of listeners.get(k) || []) fn(); },
       focus() { activeElement = this; }, scrollIntoView() {},
       querySelectorAll(selector) {
         return this.children.flatMap(c => [...(selector === c.tag ? [c] : []), ...c.querySelectorAll(selector)]);
@@ -36,7 +37,7 @@ function fixture(initialSites = []) {
     if (attrs.id) nodes.set(attrs.id, node(match[1], attrs));
   }
   const get = id => nodes.get(id);
-  get('mode').value = 'limit'; get('preset').value = '';
+  get('preset').value = ''; get('extra-method').value = 'click';
   const formHTML = html.slice(html.indexOf('<form id="site-form"')).split('</form>')[0];
   const formIds = new Set([...formHTML.matchAll(/\bid="([^"]+)"/g)].map(m => m[1]));
   const defaults = [...nodes.values()].filter(n => formIds.has(n.attrs.id)).map(n => [n, n.value, n.checked]);
@@ -56,6 +57,7 @@ function fixture(initialSites = []) {
       if (pending) await pending;
       if (failure) return {ok: false, status: 400, json: async () => ({error: failure})};
       if (path === '/api/state') return {ok: true, status: 200, json: async () => structuredClone(snapshot)};
+      if (path.endsWith('/reset')) return {ok:true,status:200,json:async()=>({ok:true})};
       if (path.startsWith('/api/groups')) {
         if (method === 'POST') stored.groups.push({id: 'group-' + (stored.groups.length + 1), ...body});
         else if (method === 'PATCH') Object.assign(stored.groups.find(g => g.id === path.split('/').pop()), body);
@@ -126,11 +128,11 @@ test('optional fields follow toggles; switching access mode keeps the draft and 
   assert.equal(f.get('grayscale-fields').hidden, false);
   f.get('extra-enabled').checked = true; f.get('extra-enabled').onchange();
   f.get('extra-minutes').value = '7';
-  f.get('mode').value = 'block'; f.get('mode').onchange();
+  f.get('always-block').checked = true; f.get('always-block').onchange();
   assert.equal(f.get('optional-limits').hidden, true);
-  f.get('mode').value = 'limit'; f.get('mode').onchange();
+  f.get('always-block').checked = false; f.get('always-block').onchange();
   assert.equal(f.get('grayscale-minutes').value, '10'); assert.equal(f.get('extra-minutes').value, '7');
-  f.get('mode').value = 'block'; f.get('mode').onchange();
+  f.get('always-block').checked = true; f.get('always-block').onchange();
   f.get('minutes').value = ''; f.get('extra-minutes').value = '';
   await f.submit();
   const body = f.requests[0].body;
@@ -175,14 +177,14 @@ test('failed save preserves draft; an in-flight request blocks duplicate submiss
 test('list actions have accessible domain labels, pause/enable patch correctly, and deletion requires confirmation', async () => {
   const f = fixture([site()]);
   const buttons = f.get('sites').querySelectorAll('button');
-  assert.deepEqual(buttons.map(b => b.getAttribute('aria-label')), ['Edit x.com', 'Pause x.com', 'Remove x.com']);
+  assert.deepEqual(buttons.map(b => b.getAttribute('aria-label')), ['Edit x.com', 'Pause x.com', 'Remove x.com', 'Reset statistics for x.com']);
   await buttons[1].onclick(); assert.deepEqual(f.requests[0].body, {enabled: false});
   const enable = f.get('sites').querySelectorAll('button')[1]; assert.equal(enable.title, 'Enable x.com');
   await enable.onclick(); assert.deepEqual(f.requests[1].body, {enabled: true});
   f.allowDiscard(false); await f.get('sites').querySelectorAll('button')[2].onclick(); assert.equal(f.requests.length, 2);
   assert.match(f.dialogs[0], /Remove x.com/);
   f.allowDiscard(true); await f.get('sites').querySelectorAll('button')[2].onclick();
-  assert.equal(f.requests[2].method, 'DELETE'); assert.equal(f.get('sites').children[0].children[0].colSpan, 5);
+  assert.equal(f.requests[2].method, 'DELETE'); assert.equal(f.get('sites').children[0].children[0].colSpan, 6);
 });
 
 test('updating a site uses PATCH, preserves a draft in Media exceptions, and block rows hide the limit', async () => {
@@ -307,4 +309,138 @@ test('group overview shows one shared bar, member usage and separate independent
   assert.match(details.children[1].children[1].textContent,/1 min used today/);
   details.open=true; await f.run('refresh()');
   assert.equal(f.get('rows').querySelectorAll('details')[0].open,true);
+});
+
+test('blur defaults, validation, draft protection and persistence are independent', async () => {
+ const f = fixture([site()]); f.run('openEditor(rules.sites[0])');
+ assert.equal(f.get('blur-enabled').checked, false); assert.equal(f.get('blur-fields').hidden, true);
+ f.get('blur-enabled').checked = true; f.get('blur-enabled').onchange();
+ assert.equal(f.get('blur-minutes').value, '10'); assert.equal(f.get('blur-minutes').disabled, false);
+ f.allowDiscard(false); f.get('cancel').onclick(); assert.equal(f.get('site-editor').hidden, false);
+ f.get('blur-minutes').value = '15'; await f.submit(); assert.equal(f.requests.length,0); assert.equal(f.focus(),f.get('blur-minutes'));
+ f.get('blur-minutes').value = '0'; await f.submit(); assert.equal(f.requests.length,0);
+ f.get('blur-minutes').value = '5'; await f.submit();
+ assert.equal(f.requests[0].body.blur_enabled,true); assert.equal(f.requests[0].body.blur_after_seconds,300);
+ assert.equal(f.requests[0].body.grayscale_enabled,false);
+ f.run('openEditor(rules.sites[0])'); assert.equal(f.get('blur-minutes').value,'5'); assert.equal(f.get('blur-enabled').checked,true);
+ f.get('always-block').checked = true; f.get('always-block').onchange(); await f.submit(); assert.equal(f.requests[1].body.blur_enabled,false);
+});
+test('shared blur accepts own threshold beyond group budget and group removal warns', async () => {
+ const f = fixture([{...site(),group_id:'fun',budget_mode:'shared',blur_enabled:true,blur_after_seconds:600}]);
+ f.run("rules.groups = [{id:'fun',name:'Fun',daily_limit_seconds:60}]; openEditor(rules.sites[0])");
+ f.get('blur-minutes').value = '1441'; await f.submit(); assert.equal(f.requests.length,0);
+ f.get('blur-minutes').value = '1440'; await f.submit(); assert.equal(f.requests[0].body.blur_after_seconds,86400);
+ f.allowDiscard(false); await f.run("removeGroup({id:'fun',name:'Fun',daily_limit_seconds:60})");
+ assert.match(f.dialogs.at(-1), /Media blur will be turned off/);
+});
+
+const legendText = f => f.get('preview-legend').children.map(li => li.children[1].textContent).join(' | ');
+test('Always block controls the whole daily block and preserves drafts and API modes', async () => {
+ const f = fixture([site()]); f.run('openEditor(rules.sites[0])');
+ assert.equal(f.get('always-block').checked,false); assert.equal(f.focus(), f.get('always-block'));
+ f.get('grayscale-enabled').checked=true;f.get('grayscale-enabled').onchange();f.get('grayscale-minutes').value='4';
+ f.get('blur-enabled').checked=true;f.get('blur-enabled').onchange();f.get('blur-minutes').value='6';
+ f.get('extra-enabled').checked=true;f.get('extra-enabled').onchange();f.get('extra-minutes').value='7';
+ f.get('always-block').checked=true;f.get('always-block').onchange();assert.equal(f.get('optional-limits').hidden,true);
+ assert.equal(f.get('always-block').getAttribute('aria-expanded'),'false');
+ f.allowDiscard(false);f.get('cancel').onclick();assert.equal(f.get('site-editor').hidden,false);
+ f.get('always-block').checked=false;f.get('always-block').onchange();
+ assert.equal(f.get('grayscale-minutes').value,'4');assert.equal(f.get('blur-minutes').value,'6');assert.equal(f.get('extra-minutes').value,'7');
+ assert.equal(f.get('optional-limits').hidden,false);assert.equal(f.get('always-block').getAttribute('aria-expanded'),'true');
+ await f.submit();assert.equal(f.requests[0].body.mode,'limit');assert.equal(f.requests[0].body.blur_after_seconds,360);
+ f.run('openEditor(rules.sites[0])');f.get('always-block').checked=true;f.get('always-block').onchange();await f.submit();
+ assert.equal(f.requests[1].body.mode,'block');assert.equal(f.requests[1].body.grayscale_enabled,false);assert.equal(f.requests[1].body.blur_enabled,false);
+ f.run('openEditor(rules.sites[0])');assert.equal(f.get('always-block').checked,true);assert.equal(f.get('optional-limits').hidden,true);
+});
+for (const [gray, blur, effects] of [
+ [null,null,['normal']], [300,null,['normal','grayscale']], [null,300,['normal','blur']],
+ [300,600,['normal','grayscale','combined']], [600,300,['normal','blur','combined']], [300,300,['normal','combined']]
+]) test(`timeline intervals for grayscale=${gray} blur=${blur}`, () => {
+ const f=fixture();const m=f.run(`limitPreviewModel({shared:false,budget:900,gray:${gray},blur:${blur}})`);
+ assert.deepEqual(Array.from(m.segments,s=>s.effect),effects);
+ assert.equal(m.segments.reduce((sum,s)=>sum+s.end-s.start,0),900);
+ assert.equal(m.filters.length,Number(gray!==null)+Number(blur!==null));
+ assert.ok(m.segments.every(s=>s.end>s.start));
+});
+test('live preview shows all manual bonuses with filters continuing and exact seconds', () => {
+ const f=fixture();f.get('add-site').onclick();f.get('minutes').value='70';f.get('minutes').emit('input');
+ f.get('grayscale-enabled').checked=true;f.get('grayscale-enabled').onchange();f.get('grayscale-minutes').value='30';f.get('grayscale-minutes').emit('input');
+ f.get('blur-enabled').checked=true;f.get('blur-enabled').onchange();f.get('blur-minutes').value='40';f.get('blur-minutes').emit('input');
+ f.get('extra-enabled').checked=true;f.get('extra-enabled').onchange();f.get('extra-uses').value='3';f.get('extra-uses').emit('input');
+ assert.equal(f.get('preview-summary').textContent,'70 min + 3 × 3 min = maximum 79 min');
+ assert.match(legendText(f),/30 min–40 min: Grayscale/);assert.match(legendText(f),/70 min–79 min: Grayscale \+ blur \(optional extra time\)/);
+ assert.match(legendText(f),/requested manually/);assert.equal(f.requests.length,0);
+ const segments=f.get('preview-track').children.filter(n=>n.className.includes('preview-segment'));
+ assert.ok(Math.abs(segments.reduce((sum,n)=>sum+parseFloat(n.style.width),0)-100)<0.0001);
+ f.get('grayscale-minutes').value=String(1/60);f.get('grayscale-minutes').emit('input');assert.match(legendText(f),/Grayscale starts at 1 sec/);
+ f.get('extra-enabled').checked=false;f.get('extra-enabled').onchange();assert.equal(f.get('preview-summary').textContent,'Daily limit: 70 min');
+ assert.doesNotMatch(legendText(f),/optional extra time/);
+});
+test('invalid preview inputs replace the chart without mutating other fields or sending requests', () => {
+ const f=fixture();f.get('add-site').onclick();
+ for(const invalid of ['', '0','-1','1441','NaN']) {
+  f.get('minutes').value=invalid;f.get('minutes').emit('input');assert.equal(f.get('preview-chart').hidden,true);
+  assert.match(f.get('preview-message').textContent,/Enter valid/);
+ }
+ f.get('minutes').value='15';f.get('minutes').emit('input');assert.equal(f.get('preview-chart').hidden,false);
+ f.get('blur-enabled').checked=true;f.get('blur-enabled').onchange();
+ for(const invalid of ['','15','16']) {f.get('blur-minutes').value=invalid;f.get('blur-minutes').emit('input');assert.equal(f.get('preview-chart').hidden,true)}
+ f.get('blur-minutes').value='10';f.get('blur-minutes').emit('input');assert.equal(f.get('preview-chart').hidden,false);
+ f.get('extra-enabled').checked=true;f.get('extra-enabled').onchange();
+ for(const invalid of ['','0','1.5','101']) {f.get('extra-uses').value=invalid;f.get('extra-uses').emit('input');assert.equal(f.get('preview-chart').hidden,true)}
+ f.get('extra-uses').value='2';f.get('extra-uses').emit('input');assert.equal(f.get('preview-chart').hidden,false);
+ f.get('extra-minutes').value='0';f.get('extra-minutes').emit('input');assert.equal(f.get('preview-chart').hidden,true);
+ assert.equal(f.get('blur-minutes').value,'10');assert.equal(f.requests.length,0);
+});
+test('shared preview shows own thresholds, read-only group budget and no blocking endpoint or extras', () => {
+ const f=fixture([site()]);f.run("rules.groups=[{id:'fun',name:'Fun',daily_limit_seconds:60}];openEditor(rules.sites[0])");
+ f.get('site-group').value='fun';f.get('budget-mode').value='shared';f.get('budget-mode').onchange();
+ assert.equal(f.get('shared-budget').textContent,'Fun: 1 min shared group budget');assert.equal(f.get('minutes-field').hidden,true);
+ assert.equal(f.get('preview-chart').hidden,true);assert.match(f.get('preview-message').textContent,/Enable grayscale or blur/);
+ f.get('blur-enabled').checked=true;f.get('blur-enabled').onchange();f.get('blur-minutes').value='20';f.get('blur-minutes').emit('input');
+ assert.equal(f.get('preview-chart').hidden,false);assert.match(f.get('preview-end').textContent,/20 min · last filter starts/);
+ assert.match(legendText(f),/Blur starts at 20 min/);assert.doesNotMatch(legendText(f),/Daily limit|optional extra time/);
+ assert.match(f.get('preview-note').textContent,/not a blocking time/);assert.equal(f.get('extra-enabled').disabled,true);
+ f.get('budget-mode').value='capped';f.get('budget-mode').onchange();assert.equal(f.get('preview-chart').hidden,true);
+ f.get('blur-minutes').value='10';f.get('blur-minutes').emit('input');assert.equal(f.get('preview-chart').hidden,false);
+ assert.match(f.get('preview-note').textContent,/group budget may block access earlier/);
+ f.get('budget-mode').value='independent';f.get('budget-mode').onchange();assert.doesNotMatch(f.get('preview-note').textContent,/may block access earlier/);
+});
+
+test('continue method defaults, draft protection, preview and saved method survive hidden options',async()=>{
+ const f=fixture([site()]);f.run('openEditor(rules.sites[0])');assert.equal(f.get('extra-method').value,'click');assert.equal(f.get('extra-method').disabled,true);
+ f.get('extra-enabled').checked=true;f.get('extra-enabled').onchange();f.get('extra-method').value='reflection';f.get('extra-method').onchange();
+ assert.match(legendText(f),/reflection and take a 10-second pause for each extension/);
+ f.allowDiscard(false);f.get('cancel').onclick();assert.equal(f.get('site-editor').hidden,false);
+ f.get('always-block').checked=true;f.get('always-block').onchange();f.get('always-block').checked=false;f.get('always-block').onchange();assert.equal(f.get('extra-method').value,'reflection');
+ await f.submit();assert.equal(f.requests[0].body.extra_time_method,'reflection');
+ f.run('openEditor(rules.sites[0])');assert.equal(f.get('extra-method').value,'reflection');
+ f.get('extra-method').value='math';f.get('extra-method').onchange();assert.match(legendText(f),/Solve a math problem for each extension/);
+});
+
+test('site remaining follows selected user and refresh preserves action focus and drafts',async()=>{
+ const f=fixture([site()]);const remaining=()=>f.get('sites').children[0].children[4];
+ const rows=[overviewRow({user:'Alice',remaining_seconds:120}),overviewRow({user:'Bob',remaining_seconds:420})];
+ f.setSnapshot(overviewData(rows));await f.run('refresh()');assert.equal(f.get('sites-user').value,'Alice');assert.equal(remaining().textContent,'2 min');
+ f.get('sites-user').value='Bob';f.get('sites-user').onchange();assert.equal(remaining().textContent,'7 min');
+ f.run('openEditor(rules.sites[0])');f.get('minutes').value='20';
+ const reset=f.get('sites').querySelectorAll('button')[3];reset.focus();
+ f.setSnapshot(overviewData(rows.map(r=>({...r,remaining_seconds:r.remaining_seconds-60}))));await f.run('refresh()');
+ assert.equal(f.get('sites-user').value,'Bob');assert.equal(remaining().textContent,'6 min');assert.equal(f.get('minutes').value,'20');assert.equal(f.focus(),reset);
+});
+test('site reset confirms selected user, sends scoped POST and keeps the editor draft',async()=>{
+ const f=fixture([site()]);f.setSnapshot(overviewData([overviewRow()]));await f.run('refresh()');
+ f.run('openEditor(rules.sites[0])');f.get('minutes').value='20';f.allowDiscard(false);
+ await f.get('sites').querySelectorAll('button')[3].onclick();assert.equal(f.requests.filter(r=>r.path.endsWith('/reset')).length,0);
+ f.allowDiscard(true);await f.get('sites').querySelectorAll('button')[3].onclick();
+ const reset=f.requests.find(r=>r.path.endsWith('/reset'));assert.equal(reset.path,'/api/sites/x.com/reset');assert.equal(reset.method,'POST');assert.deepEqual(reset.body,{user:'dev'});
+ assert.match(f.dialogs.at(-1),/x.com \/ dev/);assert.equal(f.get('minutes').value,'20');assert.equal(f.get('site-editor').hidden,false);
+});
+test('remaining distinguishes blocked and unavailable data, reset prevents duplicate actions',async()=>{
+ const f=fixture([site()]);f.setSnapshot(overviewData([overviewRow({state:'always_blocked'})]));await f.run('refresh()');
+ assert.equal(f.get('sites').children[0].children[4].textContent,'Always blocked');
+ const release=f.hold(),reset=f.get('sites').querySelectorAll('button')[3],saving=reset.onclick();
+ assert.equal(reset.disabled,true);assert.equal(f.get('sites-user').disabled,true);await reset.onclick();
+ release();await saving;assert.equal(f.requests.filter(r=>r.path.endsWith('/reset')).length,1);
+ f.run('stateUnavailable=true;updateSiteRemaining()');assert.equal(f.get('sites').children[0].children[4].textContent,'Unavailable');assert.equal(reset.disabled,true);
 });

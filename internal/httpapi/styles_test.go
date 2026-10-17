@@ -31,3 +31,22 @@ func TestLocalStyles(t *testing.T) {
 		}
 	}
 }
+
+func TestBlurStyle(t *testing.T) {
+	a := &API{Config: config.Default()}
+	for _, method := range []string{"GET", "POST"} {
+		r := httptest.NewRequest(method, "https://x.com/__pauseproxy/blur.css", nil)
+		w := httptest.NewRecorder()
+		a.Client(w, r, "dev", "127.0.0.1")
+		if method != "GET" {
+			if w.Code != 405 {
+				t.Fatal(w.Code)
+			}
+			continue
+		}
+		want := "html[data-pauseproxy-blur] img, html[data-pauseproxy-blur] video { filter: blur(8px) !important; }"
+		if w.Code != 200 || w.Body.String() != want || w.Header().Get("Content-Type") != "text/css; charset=utf-8" || w.Header().Get("Cache-Control") != "no-store" {
+			t.Fatal(w)
+		}
+	}
+}

@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Do you want to continue? · PauseProxy experiment</title>
+  <link rel="stylesheet" href="../web/mvp.css">
+  <style>
+    main { max-width: 640px; padding: 2rem 1rem; }
+    h1 { margin-top: 2rem; }
+    select, textarea, input { box-sizing: border-box; width: 100%; max-width: 100%; }
+    form { border: 0; box-shadow: none; padding: 0; max-width: none; margin: 0; }
+    button { margin: .5rem .5rem .5rem 0; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    button.secondary { background: transparent; color: var(--color-link); }
+    :focus-visible { outline: 3px solid var(--color-secondary); outline-offset: 3px; }
+    [hidden] { display: none !important; }
+    .muted { color: var(--color-text); opacity: .75; }
+    #problem, #countdown { font-size: 2rem; font-weight: bold; margin: 1rem 0; font-variant-numeric: tabular-nums; }
+    #feedback { min-height: 1.5em; }
+    #confirmation { padding: 1rem; border: 2px solid var(--color-link); border-radius: var(--border-radius); }
+    @media (max-width: 420px) { .actions button { width: 100%; margin-right: 0; } }
+  </style>
+</head>
+<body>
+  <main>
+    <small>PAUSEPROXY / EXPERIMENT</small>
+    <p class="muted">Try a short pause before spending more time on the web.</p>
+    <label for="variant">Pause method</label>
+    <select id="variant">
+      <option value="math">Math</option>
+      <option value="reflection">Reflection + 10-second pause</option>
+    </select>
+
+    <h1>Do you want to continue?</h1>
+    <div id="challenge">
+      <form id="math-form">
+        <p>Before you decide, solve a short math problem.</p>
+        <p id="problem"></p>
+        <label for="answer">Your answer</label>
+        <input id="answer" type="number" inputmode="numeric" step="1" required aria-describedby="problem feedback" autocomplete="off">
+        <button id="check" type="submit">Check answer</button>
+      </form>
+
+      <div id="reflection" hidden>
+        <label for="reason">What exactly do you still want to do on this website?</label>
+        <textarea id="reason" rows="4" placeholder="Take a moment to think and write down your intention…" aria-describedby="reflection-note feedback"></textarea>
+        <p id="reflection-note" class="muted">Write at least 3 words and 12 letters in total, without just repeating words or letters. For example, “I want to reply to a message.” Your answer is not saved.</p>
+
+        <p>Take a moment to consider whether you want to continue. Start the pause and reflect while it runs. Both your answer and the pause must be complete.</p>
+        <p id="countdown" role="timer" aria-label="Time remaining">10 s</p>
+        <button id="start" type="button">Start pause</button>
+        <p class="muted">Time only counts while this page is visible. Switching away pauses the countdown.</p>
+      </div>
+    </div>
+
+    <p id="feedback" role="status" aria-live="polite"></p>
+    <p id="confirmation" role="status" hidden>In PauseProxy, you would now continue using the website.</p>
+    <div class="actions">
+      <button id="continue" type="button" disabled>Continue</button>
+      <button id="reset" class="secondary" type="button">Try again</button>
+    </div>
+    <p class="muted"><small>Standalone prototype. The button only shows a confirmation. No website is unblocked.</small></p>
+  </main>
+  <script>
+    'use strict';
+    const $ = id => document.getElementById(id);
+    const variant = $('variant');
+    const next = $('continue');
+    const feedback = $('feedback');
+    let expected = 0;
+    let previousProblem = '';
+    let remaining = 10000;
+    let interval = null;
+    let lastTick = null;
+
+    function stopTimer() {
+      clearInterval(interval);
+      interval = null;
+      lastTick = null;
+    }
+
+    function tick() {
+      const now = performance.now();
+      if (lastTick !== null) remaining = Math.max(0, remaining - (now - lastTick));
+      lastTick = document.hidden ? null : now;
+      $('countdown').textContent = Math.ceil(remaining / 1000) + ' s';
+      if (remaining === 0) {
+        stopTimer();
+        updateReflection();
+      }
+    }
+
+    document.addEventListener('visibilitychange', () => {
+      if (interval !== null) tick();
+    });
+
+    function reset() {
+      stopTimer();
+      remaining = 10000;
+      next.disabled = true;
+      feedback.textContent = '';
+      $('confirmation').hidden = true;
+      $('challenge').hidden = false;
+      $('math-form').hidden = variant.value !== 'math';
+      $('reflection').hidden = variant.value !== 'reflection';
+      $('answer').value = '';
+      $('answer').disabled = false;
+      $('answer').removeAttribute('aria-invalid');
+      $('check').disabled = false;
+      $('reason').value = '';
+      $('reason').removeAttribute('aria-invalid');
+      $('start').disabled = false;
+      $('countdown').textContent = '10 s';
+      if (variant.value === 'math') {
+        let a, b, problem;
+        do {
+          a = 2 + Math.floor(Math.random() * 11);
+          b = 2 + Math.floor(Math.random() * 11);
+          problem = a + ' × ' + b + ' = ?';
+        } while (problem === previousProblem);
+        previousProblem = problem;
+        expected = a * b;
+        $('problem').textContent = problem;
+      }
+    }
+
+    $('math-form').addEventListener('submit', event => {
+      event.preventDefault();
+      const correct = $('answer').value.trim() !== '' && Number($('answer').value) === expected;
+      $('answer').setAttribute('aria-invalid', String(!correct));
+      next.disabled = !correct;
+      feedback.textContent = correct ? 'Correct. Now you can decide whether to continue.' : 'That is not the correct answer. Try the same problem again.';
+      if (correct) {
+        next.focus();
+        $('answer').disabled = true;
+        $('check').disabled = true;
+      } else {
+        $('answer').focus();
+        $('answer').select();
+      }
+    });
+
+    function reflectionError(text) {
+      const normalized = text.normalize('NFC').toLocaleLowerCase('en');
+      const words = normalized.match(/\p{L}[\p{L}\p{M}]*/gu) || [];
+      const letters = normalized.match(/\p{L}/gu) || [];
+      if (words.length > 0 && (new Set(words).size === 1 || words.every(word => /^(\p{L})\1*$/u.test(word)))) {
+        return 'Describe your intention in your own words, without just repeating words or letters.';
+      }
+      if (words.length < 3 || letters.length < 12) {
+        return 'Briefly describe what you want to do using at least 3 words and 12 letters in total.';
+      }
+      return '';
+    }
+
+    function updateReflection() {
+      const text = $('reason').value;
+      const error = reflectionError(text);
+      next.disabled = Boolean(error) || remaining > 0;
+      $('reason').setAttribute('aria-invalid', String(Boolean(error) && text.trim().length > 0));
+      if (error) {
+        feedback.textContent = text.trim().length > 0 ? error : remaining === 0
+          ? 'Your pause is complete. Write down your intention before continuing.'
+          : interval !== null ? 'Pause started. Take a moment to write down your intention.' : '';
+      } else {
+        feedback.textContent = remaining === 0 ? 'Your reflection and pause are complete. Do you want to continue?'
+          : interval !== null ? 'Thanks. Take the rest of the pause to consider your choice.'
+          : 'Thanks. Start the 10-second pause before continuing.';
+      }
+    }
+
+    $('reason').addEventListener('input', updateReflection);
+
+    $('start').addEventListener('click', () => {
+      if (interval !== null || remaining === 0) return;
+      $('start').disabled = true;
+      lastTick = document.hidden ? null : performance.now();
+      interval = setInterval(tick, 100);
+      updateReflection();
+    });
+
+    next.addEventListener('click', () => {
+      if (next.disabled) return;
+      stopTimer();
+      $('reason').value = '';
+      $('challenge').hidden = true;
+      feedback.textContent = '';
+      $('confirmation').hidden = false;
+      next.disabled = true;
+      $('reset').focus();
+    });
+
+    variant.addEventListener('change', reset);
+    $('reset').addEventListener('click', () => {
+      reset();
+      $(variant.value === 'math' ? 'answer' : 'reason').focus();
+    });
+    reset();
+  </script>
+</body>
+</html>

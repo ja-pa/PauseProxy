@@ -25,7 +25,7 @@ func TestExtraAPI(t *testing.T) {
 		a.Admin(w, r)
 		return w
 	}
-	body := `{"domain":"example.com","daily_limit_seconds":10,"grayscale_enabled":true,"grayscale_after_seconds":5,"extra_time_enabled":true,"extra_time_seconds":180,"extra_time_max_uses":2}`
+	body := `{"domain":"example.com","daily_limit_seconds":10,"extra_time_method":"math","blur_enabled":true,"blur_after_seconds":4,"grayscale_enabled":true,"grayscale_after_seconds":5,"extra_time_enabled":true,"extra_time_seconds":180,"extra_time_max_uses":2}`
 	if w := admin("POST", "/api/sites", body); w.Code != 200 {
 		t.Fatal(w.Code, w.Body.String())
 	}
@@ -35,8 +35,26 @@ func TestExtraAPI(t *testing.T) {
 	if w := admin("PATCH", "/api/sites/example.com", `{"extra_time_max_uses":3}`); w.Code != 200 {
 		t.Fatal(w.Body.String())
 	}
+	if r, _ := a.Rules().Find("example.com"); !r.BlurEnabled || r.BlurAfter != 4 {
+		t.Fatal("unrelated PATCH changed blur", r)
+	}
+	if w := admin("PATCH", "/api/sites/example.com", `{"blur_after_seconds":10}`); w.Code != 400 {
+		t.Fatal(w.Code)
+	}
+	if w := admin("PATCH", "/api/sites/example.com", `{"blur_after_seconds":6}`); w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	if w := admin("PATCH", "/api/sites/example.com", `{"blur_enabled":false}`); w.Code != 200 {
+		t.Fatal(w.Code)
+	}
+	if r, _ := a.Rules().Find("example.com"); r.BlurEnabled || r.BlurAfter != 6 {
+		t.Fatal(r)
+	}
+	if w := admin("PATCH", "/api/sites/example.com", `{"blur_enabled":true,"blur_after_seconds":4}`); w.Code != 200 {
+		t.Fatal(w.Code)
+	}
 	rule, _ := a.Rules().Find("example.com")
-	if rule.ExtraMaxUses != 3 || rule.GrayscaleAfter != 5 {
+	if rule.ExtraMethod != "math" || !rule.BlurEnabled || rule.BlurAfter != 4 || rule.ExtraMaxUses != 3 || rule.GrayscaleAfter != 5 {
 		t.Fatal(rule)
 	}
 	a.State.ChangeRules(func(d *sites.Document) error { d.Sites[0].Seconds = 1; d.Sites[0].ExtraEnabled = true; return nil })

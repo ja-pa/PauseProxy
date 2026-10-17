@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"net/url"
 	"path/filepath"
 	"strings"
@@ -24,7 +25,7 @@ import (
 	"pauseproxy/internal/state"
 )
 
-func testProxyClient(t *testing.T) *http.Client {
+func testProxyClient(t *testing.T, transports ...http.RoundTripper) *http.Client {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "ca")
 	if err := Bootstrap(dir); err != nil {
@@ -42,7 +43,16 @@ func testProxyClient(t *testing.T) *http.Client {
 	_ = ln.Close()
 	c := config.Default()
 	c.Hosts = []string{"127.0.0.1", "localhost", "x.com"}
-	p, err := proxy.NewProxy(&proxy.Options{Addr: addr, NewCaFunc: func() (cert.CA, error) { return ca, nil }})
+	upstream, err := NewUpstreamTransport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(upstream.CloseIdleConnections)
+	var transport http.RoundTripper = upstream
+	if len(transports) > 0 {
+		transport = transports[0]
+	}
+	p, err := proxy.NewProxy(&proxy.Options{Addr: addr, UpstreamTransport: transport, NewCaFunc: func() (cert.CA, error) { return ca, nil }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,9 +76,9 @@ func testProxyClient(t *testing.T) *http.Client {
 	pu, _ := url.Parse("http://" + addr)
 	roots := x509.NewCertPool()
 	roots.AddCert(ca.GetRootCA())
-	transport := &http.Transport{Proxy: http.ProxyURL(pu), TLSClientConfig: &tls.Config{RootCAs: roots}}
-	t.Cleanup(transport.CloseIdleConnections)
-	client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+	clientTransport := &http.Transport{Proxy: http.ProxyURL(pu), TLSClientConfig: &tls.Config{RootCAs: roots}}
+	t.Cleanup(clientTransport.CloseIdleConnections)
+	client := &http.Client{Transport: clientTransport, Timeout: 5 * time.Second}
 	// TCP readiness alone is insufficient with WSL localhost forwarding. Verify
 	// the actual HTTP handler and warm this client's proxy connection first.
 	for i := 0; i < 50; i++ {
@@ -80,11 +90,199 @@ func testProxyClient(t *testing.T) *http.Client {
 				return client
 			}
 		}
-		transport.CloseIdleConnections()
+		clientTransport.CloseIdleConnections()
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("proxy HTTP handler did not become ready")
 	return nil
+}
+
+// The first connection stays open but drops bytes after stall is enabled.
+// Subsequent connections work normally, like reconnecting after a network change.
+type blackholeListener struct {
+	net.Listener
+	stall    atomic.Bool
+	accepted atomic.Int32
+}
+
+func (l *blackholeListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	if l.accepted.Add(1) == 1 {
+		return &blackholeConn{Conn: c, stall: &l.stall}, nil
+	}
+	return c, nil
+}
+
+type blackholeConn struct {
+	net.Conn
+	stall *atomic.Bool
+}
+
+func (c *blackholeConn) Read(p []byte) (int, error) {
+	for {
+		n, err := c.Conn.Read(p)
+		if err != nil || !c.stall.Load() {
+			return n, err
+		}
+	}
+}
+
+func (c *blackholeConn) Write(p []byte) (int, error) {
+	if c.stall.Load() {
+		return len(p), nil
+	}
+	return c.Conn.Write(p)
+}
+
+func TestHTTP2BlackholeRecovery(t *testing.T) {
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		t.Run(method, func(t *testing.T) {
+			var posts atomic.Int32
+			var wire *blackholeListener
+			server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.ProtoMajor != 2 {
+					t.Errorf("upstream protocol = %s", r.Proto)
+				}
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				if r.Method == http.MethodPost {
+					if string(body) != "do-once" {
+						t.Errorf("POST body = %q", body)
+					}
+					if posts.Add(1) == 1 {
+						wire.stall.Store(true)
+					}
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"ok":true}`))
+			}))
+			wire = &blackholeListener{Listener: server.Listener}
+			server.Listener = wire
+			server.EnableHTTP2 = true
+			server.StartTLS()
+			t.Cleanup(server.Close)
+			// Use production wiring with shorter intervals so the test does not
+			// wait 20 seconds. The generous header timeout isolates PING recovery.
+			upstream, err := newUpstreamTransport(100*time.Millisecond, 100*time.Millisecond, time.Second, 3*time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			roots := x509.NewCertPool()
+			roots.AddCert(server.Certificate())
+			upstream.TLSClientConfig = &tls.Config{RootCAs: roots, ServerName: "127.0.0.1"}
+			t.Cleanup(upstream.CloseIdleConnections)
+			client := testProxyClient(t, upstream)
+			var browserReused bool
+			read := func(method string) (int, string) {
+				t.Helper()
+				r, err := http.NewRequest(method, strings.Replace(server.URL, "127.0.0.1", "localhost", 1), strings.NewReader("do-once"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				r = r.WithContext(httptrace.WithClientTrace(r.Context(), &httptrace.ClientTrace{GotConn: func(info httptrace.GotConnInfo) { browserReused = info.Reused }}))
+				resp, err := client.Do(r)
+				if err != nil {
+					t.Fatal(err)
+				}
+				body, err := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				if err != nil {
+					t.Fatal(err)
+				}
+				return resp.StatusCode, string(body)
+			}
+			if code, body := read(http.MethodGet); code != 200 || body != `{"ok":true}` {
+				t.Fatalf("warmup: %d %q", code, body)
+			}
+			if wire.accepted.Load() != 1 {
+				t.Fatalf("warmup connections = %d", wire.accepted.Load())
+			}
+			if method == http.MethodGet {
+				wire.stall.Store(true)
+			}
+			start := time.Now()
+			code, _ := read(method)
+			if elapsed := time.Since(start); elapsed > 2*time.Second {
+				t.Fatalf("dead connection not retired by health check: %s", elapsed)
+			}
+			if code != 200 && code != 502 {
+				t.Fatalf("stalled request status = %d", code)
+			}
+			if method == http.MethodPost && (code != 502 || posts.Load() != 1) {
+				t.Fatalf("ambiguous POST was replayed: status=%d received=%d", code, posts.Load())
+			}
+			if code, body := read(method); code != 200 || body != `{"ok":true}` {
+				t.Fatalf("recovery: %d %q", code, body)
+			}
+			if wire.accepted.Load() < 2 {
+				t.Fatal("no new upstream connection")
+			}
+			if !browserReused {
+				t.Fatal("recovery replaced the browser connection")
+			}
+			if method == http.MethodPost && posts.Load() != 2 {
+				t.Fatalf("POST lost/duplicated: %d", posts.Load())
+			}
+		})
+	}
+}
+
+func TestUpstreamHeaderTimeoutRecovery(t *testing.T) {
+	for _, tlsEnabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("tls=%v", tlsEnabled), func(t *testing.T) {
+			var stalled atomic.Bool
+			server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if !stalled.Swap(true) {
+					<-r.Context().Done()
+					return
+				}
+				_, _ = w.Write([]byte("recovered"))
+			}))
+			if tlsEnabled {
+				server.EnableHTTP2 = true
+				server.StartTLS()
+			} else {
+				server.Start()
+			}
+			defer server.Close()
+			upstream, err := newUpstreamTransport(time.Second, time.Second, time.Second, 150*time.Millisecond)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tlsEnabled {
+				roots := x509.NewCertPool()
+				roots.AddCert(server.Certificate())
+				upstream.TLSClientConfig = &tls.Config{RootCAs: roots, ServerName: "127.0.0.1"}
+			}
+			t.Cleanup(upstream.CloseIdleConnections)
+			client := testProxyClient(t, upstream)
+			start := time.Now()
+			url := strings.Replace(server.URL, "127.0.0.1", "localhost", 1)
+			resp, err := client.Get(url)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != 502 || time.Since(start) > time.Second {
+				t.Fatalf("headers not bounded: status=%d elapsed=%s", resp.StatusCode, time.Since(start))
+			}
+			resp, err = client.Get(url)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil || resp.StatusCode != 200 || string(body) != "recovered" {
+				t.Fatalf("recovery: %d %q %v", resp.StatusCode, body, err)
+			}
+		})
+	}
 }
 
 func TestRequestBodyReplayBounds(t *testing.T) {

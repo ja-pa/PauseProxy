@@ -25,13 +25,15 @@ func Token() string {
 }
 
 type Session struct {
-	ID         string    `json:"session_id"`
-	Instance   string    `json:"instance_id"`
-	Site, Host string    `json:"-"`
-	User, IP   string    `json:"-"`
-	Last       time.Time `json:"-"`
-	Until      time.Time `json:"-"`
-	Sequence   uint64    `json:"-"`
+	ID              string          `json:"session_id"`
+	Instance        string          `json:"instance_id"`
+	Site, Host      string          `json:"-"`
+	User, IP        string          `json:"-"`
+	Last            time.Time       `json:"-"`
+	Until           time.Time       `json:"-"`
+	Challenge       *ExtraChallenge `json:"-"`
+	PreviousProblem int             `json:"-"`
+	Sequence        uint64          `json:"-"`
 }
 type Counter struct {
 	ExtraUses     int             `json:"extra_time_uses"`
@@ -49,7 +51,9 @@ type Status struct {
 	GroupName          string  `json:"group_name,omitempty"`
 	GroupRemaining     float64 `json:"group_remaining_seconds,omitempty"`
 	LimitScope         string  `json:"limit_scope,omitempty"`
+	Blur               bool    `json:"blur"`
 	Grayscale          bool    `json:"grayscale"`
+	ExtraMethod        string  `json:"extra_time_method"`
 	ExtraAvailable     bool    `json:"extra_time_available"`
 	ExtraSeconds       int     `json:"extra_time_seconds"`
 	ExtraUsesRemaining int     `json:"extra_time_uses_remaining"`
@@ -150,6 +154,9 @@ func (s *Store) ChangeRules(change func(*sites.Document) error) error {
 			m, matched := d.Match(se.Host)
 			valid = valid && matched && m.Domain == se.Site
 		}
+		if se.Challenge != nil && (!valid || !v.ExtraEnabled || v.ExtraMethod != se.Challenge.Method || !s.status(se.User, se.Site, t).ExtraAvailable) {
+			se.Challenge = nil
+		}
 		if !valid || v.Mode == "block" {
 			se.Until = t
 		}
@@ -162,6 +169,9 @@ func (s *Store) advance(t time.Time) {
 	type account struct{ user, site string }
 	ends := map[account]time.Time{}
 	for id, se := range s.sessions {
+		if se.Challenge != nil && !se.Challenge.validAt(t, s.loc) {
+			se.Challenge = nil
+		}
 		if se.Until.After(ends[account{se.User, se.Site}]) {
 			ends[account{se.User, se.Site}] = se.Until
 		}
@@ -239,6 +249,10 @@ func (s *Store) ruleStatus(rule sites.Site, c Counter, t time.Time) Status {
 			v.GroupRemaining = groupRemaining
 		}
 	}
+	v.ExtraMethod = rule.ExtraMethod
+	if v.ExtraMethod == "" {
+		v.ExtraMethod = "click"
+	}
 	if !rule.Enabled {
 		return v
 	}
@@ -255,6 +269,7 @@ func (s *Store) ruleStatus(rule sites.Site, c Counter, t time.Time) Status {
 			v.Reason, v.LimitScope = "Group limit reached: "+g.Name, "group"
 		}
 	}
+	v.Blur = rule.Mode == "limit" && rule.BlurEnabled && c.Seconds >= float64(rule.BlurAfter)
 	v.Grayscale = rule.Mode == "limit" && rule.GrayscaleEnabled && c.Seconds >= float64(rule.GrayscaleAfter)
 	v.ExtraSeconds = rule.ExtraSeconds
 	if rule.ExtraEnabled && rule.Mode == "limit" && rule.BudgetMode != "shared" {
@@ -484,9 +499,12 @@ func (s *Store) Reset() {
 
 // ExtraTime grants a daily shared budget, atomically and idempotently.
 type ExtraRequest struct {
-	ID        string `json:"session_id"`
-	Instance  string `json:"instance_id"`
-	RequestID string `json:"request_id"`
+	ID          string `json:"session_id"`
+	Instance    string `json:"instance_id"`
+	RequestID   string `json:"request_id"`
+	ChallengeID string `json:"challenge_id,omitempty"`
+	Answer      *int   `json:"answer,omitempty"`
+	Reflection  string `json:"reflection,omitempty"`
 }
 
 var ErrExtra = errors.New("extra time is not available")
@@ -496,20 +514,9 @@ func (s *Store) ExtraTime(user, ip, host string, b ExtraRequest) (Status, error)
 	defer s.mu.Unlock()
 	t := s.now()
 	s.advance(t)
-	se := s.sessions[b.ID]
-	if se == nil || se.User != user || se.IP != ip || se.Host != host || b.Instance != s.instance {
-		return Status{}, ErrSession
-	}
-	if len(b.RequestID) < 1 || len(b.RequestID) > 128 {
-		return Status{}, errors.New("invalid request_id")
-	}
-	rule, ok := s.rules.Find(se.Site)
-	if host != "" {
-		matched, valid := s.rules.Match(host)
-		ok = ok && valid && matched.Domain == se.Site
-	}
-	if !ok || !rule.Enabled {
-		return Status{}, ErrExtra
+	se, rule, err := s.extraSession(user, ip, host, b)
+	if err != nil {
+		return Status{}, err
 	}
 	c := s.counter(user, t, se.Site)
 	v := s.status(user, se.Site, t)
@@ -517,8 +524,27 @@ func (s *Store) ExtraTime(user, ip, host string, b ExtraRequest) (Status, error)
 		return v, nil
 	}
 	if !v.ExtraAvailable {
+		se.Challenge = nil
 		return v, ErrExtra
 	}
+	if rule.ExtraMethod != "" && rule.ExtraMethod != "click" {
+		ch := se.Challenge
+		if ch == nil || ch.ID != b.ChallengeID || ch.requestID != b.RequestID || ch.Method != rule.ExtraMethod || !ch.validAt(t, s.loc) {
+			return v, ErrChallenge
+		}
+		if ch.Method == "math" && (b.Answer == nil || *b.Answer != ch.A*ch.B) {
+			return v, errors.New("That is not the correct answer. Try the same problem again.")
+		}
+		if ch.Method == "reflection" {
+			if t.Sub(ch.started) < 10*time.Second {
+				return v, errors.New("Complete the 10-second pause before continuing.")
+			}
+			if err := ReflectionError(b.Reflection); err != nil {
+				return v, err
+			}
+		}
+	}
+	se.Challenge = nil
 	c.ExtraSeconds = math.Max(c.ExtraSeconds, c.Seconds-float64(rule.Seconds)) + float64(rule.ExtraSeconds)
 	c.ExtraUses++
 	// A blocked page must send a fresh active heartbeat before spending the grant.
@@ -532,4 +558,34 @@ func (s *Store) ExtraTime(user, ip, host string, b ExtraRequest) (Status, error)
 	}
 	c.ExtraRequests[b.RequestID] = true
 	return s.status(user, se.Site, t), nil
+}
+
+// ResetSite clears only today's counters and sessions for one configured user/site.
+// Settled group usage remains historical and belongs to the whole group.
+func (s *Store) ResetSite(user, domain string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	known := false
+	for _, name := range s.cfg.Users {
+		if name == user {
+			known = true
+			break
+		}
+	}
+	if !known {
+		return errors.New("unknown user")
+	}
+	if _, ok := s.rules.Find(domain); !ok {
+		return errors.New("unknown site")
+	}
+	t := s.now()
+	s.advance(t)
+	date := t.In(s.loc).Format("2006-01-02")
+	delete(s.counters, user+"/"+domain+"/"+date)
+	for id, se := range s.sessions {
+		if se.User == user && se.Site == domain {
+			delete(s.sessions, id)
+		}
+	}
+	return nil
 }

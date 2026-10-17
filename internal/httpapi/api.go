@@ -90,6 +90,13 @@ func (a *API) client(w http.ResponseWriter, r *http.Request, user, ip string, pu
 		return
 	}
 	switch r.URL.Path {
+	case "/__pauseproxy/blur.css":
+		if r.Method != "GET" {
+			Error(w, 405, "GET required")
+			return
+		}
+		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+		_, _ = w.Write([]byte("html[data-pauseproxy-blur] img, html[data-pauseproxy-blur] video { filter: blur(8px) !important; }"))
 	case "/__pauseproxy/grayscale.css":
 		if r.Method != "GET" {
 			Error(w, 405, "GET required")
@@ -188,7 +195,7 @@ func (a *API) client(w http.ResponseWriter, r *http.Request, user, ip string, pu
 		a.diagnosticsMu.Lock()
 		a.diagnostics.Heartbeats++
 		a.diagnosticsMu.Unlock()
-	case "/__pauseproxy/extra-time":
+	case "/__pauseproxy/extra-time", "/__pauseproxy/extra-time/challenge":
 		if r.Method != "POST" {
 			Error(w, 405, "POST required")
 			return
@@ -201,13 +208,19 @@ func (a *API) client(w http.ResponseWriter, r *http.Request, user, ip string, pu
 		if public {
 			host = ""
 		}
-		result, err := a.State.ExtraTime(user, ip, host, b)
+		var result any
+		var err error
+		if r.URL.Path == "/__pauseproxy/extra-time/challenge" {
+			result, err = a.State.CreateExtraChallenge(user, ip, host, b)
+		} else {
+			result, err = a.State.ExtraTime(user, ip, host, b)
+		}
 		if err != nil {
 			code := 400
 			if err == state.ErrSession {
 				code = 401
 			}
-			if err == state.ErrExtra {
+			if err == state.ErrExtra || err == state.ErrChallenge {
 				code = 409
 			}
 			Error(w, code, err.Error())
@@ -440,6 +453,23 @@ func (a *API) Admin(w http.ResponseWriter, r *http.Request) {
 			}
 			return nil
 		})
+	case strings.HasPrefix(r.URL.Path, "/api/sites/") && strings.HasSuffix(r.URL.Path, "/reset") && r.Method == "POST":
+		domain, err := sites.Domain(strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/sites/"), "/reset"))
+		if err != nil {
+			Error(w, 400, err.Error())
+			return
+		}
+		var b struct {
+			User string `json:"user"`
+		}
+		if !decode(w, r, &b) {
+			return
+		}
+		if err := a.State.ResetSite(b.User, domain); err != nil {
+			Error(w, 400, err.Error())
+			return
+		}
+		JSON(w, 200, map[string]bool{"ok": true})
 	case strings.HasPrefix(r.URL.Path, "/api/sites/") && (r.Method == "PATCH" || r.Method == "DELETE"):
 		domain, e := sites.Domain(strings.TrimPrefix(r.URL.Path, "/api/sites/"))
 		if e != nil {
@@ -453,8 +483,11 @@ func (a *API) Admin(w http.ResponseWriter, r *http.Request) {
 			Enabled          *bool     `json:"enabled"`
 			Mode             *string   `json:"mode"`
 			Seconds          *int      `json:"daily_limit_seconds"`
+			BlurEnabled      *bool     `json:"blur_enabled"`
+			BlurAfter        *int      `json:"blur_after_seconds"`
 			GrayscaleEnabled *bool     `json:"grayscale_enabled"`
 			GrayscaleAfter   *int      `json:"grayscale_after_seconds"`
+			ExtraMethod      *string   `json:"extra_time_method"`
 			ExtraEnabled     *bool     `json:"extra_time_enabled"`
 			ExtraSeconds     *int      `json:"extra_time_seconds"`
 			ExtraMaxUses     *int      `json:"extra_time_max_uses"`
@@ -476,11 +509,20 @@ func (a *API) Admin(w http.ResponseWriter, r *http.Request) {
 						if b.BudgetMode != nil {
 							v.BudgetMode = *b.BudgetMode
 						}
+						if b.BlurEnabled != nil {
+							v.BlurEnabled = *b.BlurEnabled
+						}
+						if b.BlurAfter != nil {
+							v.BlurAfter = *b.BlurAfter
+						}
 						if b.GrayscaleEnabled != nil {
 							v.GrayscaleEnabled = *b.GrayscaleEnabled
 						}
 						if b.GrayscaleAfter != nil {
 							v.GrayscaleAfter = *b.GrayscaleAfter
+						}
+						if b.ExtraMethod != nil {
+							v.ExtraMethod = *b.ExtraMethod
 						}
 						if b.ExtraEnabled != nil {
 							v.ExtraEnabled = *b.ExtraEnabled

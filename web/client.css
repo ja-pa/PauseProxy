@@ -1,3 +1,18 @@
 :host{all:initial}[hidden]{display:none!important}.badge{position:fixed;bottom:20px;right:20px;z-index:2147483647;display:flex;align-items:center;gap:12px;max-width:calc(100vw - 56px);background:#fff;color:#344054;border:1px solid #dce1e8;padding:10px 12px;border-radius:10px;font:13px system-ui;box-shadow:0 4px 20px #10182820}.badge-text{font-variant-numeric:tabular-nums}.badge.warning{background:#fffaeb;border-color:#fedf89;color:#93370d}.badge.blocked{background:#fef3f2;border-color:#fecdca;color:#b42318}.settings-link{display:inline-flex;align-items:center;justify-content:center;min-width:32px;min-height:32px;color:#2563eb;text-decoration:none;border-radius:6px;font:20px system-ui}.settings-link:hover{background:#edf3ff}.settings-link:focus-visible,button:focus-visible{outline:3px solid #93b4ff;outline-offset:3px}.wall{position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;background:#f5f6f8fa;color:#182230;font:18px system-ui;text-align:center}.wall section{max-width:440px;padding:30px}.wall h1{font-size:36px}.wall button{background:#2563eb;color:white;padding:12px 18px;border:0;border-radius:8px;cursor:pointer;margin:12px;font:15px system-ui}
 
 .wall button:disabled{opacity:.6;cursor:wait}
+
+.wall { overflow-y:auto; }
+.wall section { width:100%; max-width:500px; max-height:100%; box-sizing:border-box; }
+.continue-challenge { text-align:left; margin-top:20px; }
+.continue-challenge h2 { font-size:23px; }
+.continue-challenge form { margin:0; }
+.continue-challenge label { display:block; font-size:16px; }
+.continue-challenge input,.continue-challenge textarea { display:block; box-sizing:border-box; width:100%; max-width:100%; padding:10px; margin-top:8px; border:1px solid #98a2b3; border-radius:6px; font:16px system-ui; color:#182230; background:#fff; }
+.continue-challenge textarea { resize:vertical; }
+.continue-challenge :focus-visible { outline:3px solid #93b4ff; outline-offset:3px; }
+.challenge-problem,.challenge-countdown { font-size:28px; font-weight:700; font-variant-numeric:tabular-nums; }
+.challenge-note,.challenge-feedback { font-size:14px; line-height:1.5; }
+.wall .challenge-cancel { background:#e4e7ec; color:#182230; }
+.continue-challenge [aria-invalid=true] { border-color:#b42318; }
+@media(max-width:420px) { .wall section { padding:20px; } .wall h1 { font-size:28px; } .wall button { margin:8px 4px; } }

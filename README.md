@@ -122,6 +122,8 @@ RAM holds at most 256 sessions expiring after 5 minutes, aggregates for today an
 
 Upstream requests use a shared HTTP transport that can establish a new connection after a failure independently of the browser connection. Bodies up to 256 KiB are briefly buffered only in RAM so Go can reread them for safe transport retries; larger bodies are streamed. There is no custom automatic retry of POST requests. `context canceled` can occur when the browser cancels loading; it does not itself mean the proxy crashed. Repeated errors during normal loading or `cannot rewind body after connection loss` require transport investigation.
 
+The shared transport checks silent HTTP/2 connections after 15 seconds and closes them if a PING has no reply within 5 seconds. Writes with no progress time out after 10 seconds; waiting for response headers after sending a request is limited to 15 seconds. This retires stale connections after sleep or a network change without restarting PauseProxy or clearing statistics. A request already in flight may return 502; subsequent requests reconnect. Ambiguous POSTs are not automatically replayed. These are phase timeouts, not a total response-body download limit. The local `third_party/go-mitmproxy` runtime source patch exposes the transport configuration hook.
+
 The normal process only reads the CA and startup configuration. It writes site rules when explicitly saved in settings; CA bootstrap is a separate write. Statistics and sessions are not persisted. Builds, Go caches and browser caches are outside this guarantee.
 
 | Interface | Endpoint | Protection |
@@ -200,3 +202,33 @@ Grayscale uses the site's own usage today. Extra time is available only for inde
 Deleting a group preserves its sites as independent rules. Shared sites inherit the group's base limit; others retain their own. If a shared site's grayscale threshold is not below the inherited limit, the confirmation warns about this and grayscale is disabled; the threshold remains saved. Overview shows a shared bar and expandable members with their own usage and mode. Group blocking messages include the group name.
 
 Rules are now saved as version 2. Version 1 is migrated in memory without changing behavior; version 2 is written to disk only when rules are explicitly saved. Older binaries cannot read version 2. Statistics, including groups, stay only in RAM; reset, restart and a new local day restore the available base budgets.
+
+## Optional media blur
+
+Daily limit rules also offer **Blur images/videos**, independent of grayscale. It applies a fixed CSS `blur(8px)` to `<img>` and `<video>` elements, including dynamically added media, after the site's own active-time threshold. Text and CSS backgrounds are unaffected. Both filters can be combined; extra time preserves both. Blur defaults to off, and first enabling it suggests two thirds of the site limit. There is no strength slider or reveal on hover.
+
+Rules and POST/PATCH site APIs add `blur_enabled` and `blur_after_seconds`; client status adds `blur`. Omitted PATCH fields stay unchanged. Existing v1/v2 rules load with blur disabled; the saved document remains version 2. Enabled thresholds must be 1–86400 seconds and earlier than the site limit for independent/capped budgets. Shared budgets use the site's own time without requiring a threshold below the group limit. Removing a group disables blur if its threshold no longer fits the inherited site limit, preserving the threshold for editing.
+
+The injected client loads `/__pauseproxy/blur.css` and toggles `data-pauseproxy-blur` on HTML. Like grayscale, the visual effect clears while blocked, offline or no longer tracked, and returns when an allowed status enables it. Settings apply at the next heartbeat. After updating, rebuild, restart PauseProxy and reload open sites.
+
+## Daily limit editor and timeline
+
+In the site editor, **Always block** replaces the Rule selector. Checking it hides the complete Daily limit section; unchecking restores its draft values. **Enabled** independently pauses or enables the saved rule. Saving still uses `mode: "block"` or `mode: "limit"`, with the existing validation and API format.
+
+The Daily limit section puts the budget above a live timeline, followed by Grayscale, Blur images/videos and Extra time. The preview uses the unsaved settings, not today's usage. Blue means normal browsing, gray means grayscale, purple means blur and dark purple means both. Markers and a textual legend show exact filter start times and the daily limit. A dashed bonus section includes every permitted extension (for example, 70 minutes + 3 x 3 minutes = a maximum of 79 minutes). Bonuses require manual requests and preserve active filters. Invalid settings replace the chart with an explanation until corrected.
+
+For capped budgets, the group may block access earlier. Shared budgets show the group's configured budget read-only and preview only the site's own filter thresholds, ending at the last filter start; this endpoint does not predict blocking because other sites also spend group time. With no filters, the shared preview shows explanatory text. Extra time is unavailable for shared budgets.
+
+## Extra-time continuation methods
+
+The Extra time card offers **Continue method**: **Click to extend** (the default for existing rules), **Math**, or **Reflection + 10-second pause**. Every extension requires a fresh task. Math uses multiplication with operands 2–12. Reflection requires at least three words and twelve letters, rejects simple repeated words/letters, and accepts Czech/Unicode text up to 500 characters. Start pause begins ten seconds; the browser counts only visible time. Continue explicitly requests the bonus after completion. Cancel discards the task without spending an extension. These forms appear in both the injected overlay and the blocking document; scheduled breaks and exhausted group budgets still cannot be extended.
+
+Rules, administration APIs and client status add `extra_time_method` (`click`, `math`, `reflection`). Omitted PATCH fields stay unchanged and missing saved values default to `click`; document version remains 2. The editor's bonus legend describes the selected condition without changing the time scale.
+
+`POST /__pauseproxy/extra-time/challenge` accepts the existing session/instance/request identifiers and returns a `challenge_id`, method, expiration, and math operands when applicable. Reflection creates its challenge on Start pause. A session holds at most one challenge in RAM, valid for five minutes and its local calendar day. Session expiry, reset/restart, method changes or lost eligibility invalidate it. The grant endpoint additionally accepts `challenge_id` and either integer `answer` or `reflection`. It validates the math or reflection text and at least ten seconds of server elapsed time for reflection; the client additionally requires ten visible seconds. Reflection answers are processed only during the request and are never retained or logged. Successful grants remain atomic and retries with the same request ID do not spend another extension.
+
+## Per-site statistics in Sites & limits
+
+Choose **Statistics for user** above the site table to view that user's live **Time remaining**. It uses the same effective site/group budget as Overview and refreshes every two seconds without replacing action buttons or the editor draft. The row's **Reset statistics** action resets today's used time, clicks, visits, bonus grants and bonus-use count only for the selected user and site. It cancels that user's sessions and pending challenges for the site; open pages reconnect automatically. Other users, sites, yesterday's counters and saved rules are unchanged. Already spent group time stays recorded, so resetting a shared/capped site cannot restore an exhausted group budget.
+
+`POST /api/sites/{domain}/reset` accepts JSON `{"user":"configured user name"}` with the standard admin authentication and Origin/Host checks. Unknown users/sites are rejected. Reset affects only in-memory state and settles active usage before clearing the selected counters.
