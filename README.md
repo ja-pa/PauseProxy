@@ -1,5 +1,8 @@
 # PauseProxy
 
+Licensed under [MIT](LICENSE). Third-party components retain their own licenses;
+see [licensing and dependency notices](LICENSING.md).
+
 Local MVP: a Go application with selective HTTPS MITM, PAC, JavaScript heartbeats and site management. Statistics and sessions stay in RAM. Site rules are saved to `.local/sites.json`. The initial X rule retains its **120-second** limit; new sites default to **15 minutes**.
 
 For code changes, see the [DEV_README.md developer guide](DEV_README.md): architecture, PAC/MITM invariants, tests, CSP and known issues.
