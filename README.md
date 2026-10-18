@@ -33,9 +33,9 @@ Ubuntu requires `curl`, `python3` and `timeout` (coreutils), plus `tar` and `sha
 
 First stop any running Windows instance in its own terminal. Both instances use ports **9080/9082/9083** and may conflict in WSL mirrored mode. The script explains occupied ports without stopping other processes. Running `--check` also leaves an existing server unaffected.
 
-After startup, open the [step-by-step setup guide](https://127.0.0.1:9083/howto) in **Windows Chrome or Edge**. It requires no sign-in and covers the demo, public CA import, PAC setup, testing X, troubleshooting and restoring the original settings. Settings also links to the guide. See [Microsoft's documentation](https://learn.microsoft.com/en-us/windows/wsl/networking) for Windows access to WSL through localhost.
+After startup, open the [step-by-step setup guide](http://127.0.0.1:9083/howto) in **Windows Chrome or Edge**. It requires no sign-in and covers the demo, public CA import, PAC setup, testing X, troubleshooting and restoring the original settings. Settings also links to the guide. See [Microsoft's documentation](https://learn.microsoft.com/en-us/windows/wsl/networking) for Windows access to WSL through localhost.
 
-For Chrome on Android, the guide has a [separate procedure for a phone over Wi-Fi](https://127.0.0.1:9083/howto#android): LAN configuration, WSL mirrored networking or running on Windows, firewall access for a specific phone, public CA import, Wi-Fi PAC, tracking checks and restoring the original settings.
+For Chrome on Android, the guide has a [separate procedure for a phone over Wi-Fi](http://127.0.0.1:9083/howto#android): LAN configuration, WSL mirrored networking or running on Windows, firewall access for a specific phone, public CA import, Wi-Fi PAC, tracking checks and restoring the original settings.
 
 The script can run from any working directory; it always reads settings from the project directory. An existing Windows CA in `.local/ca` can also be used in WSL, so no new import is needed if the CA is unchanged. Configure the Windows proxy and trusted certificate store manually as described in the guide.
 
@@ -60,7 +60,7 @@ In PowerShell at the project root:
 
 If PowerShell blocks scripts, run the specific command with `powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1 start`. No system-wide execution policy change is required.
 
-- Settings: <https://127.0.0.1:9083>
+- Settings: <http://127.0.0.1:9083>
 - Demo without PAC or CA installation: <http://127.0.0.1:9082/demo>
 - PAC: <http://127.0.0.1:9082/proxy.pac>
 - Proxy: `127.0.0.1:9080`
@@ -111,7 +111,7 @@ For LAN use, create your own configuration copy:
 - `proxy_addr`: `0.0.0.0:9080`, `pac_addr`: `0.0.0.0:9082`.
 - `advertised_proxy`: the PC's actual IP, e.g. `192.168.1.50:9080`.
 - Add the phone's exact IP to `users`, e.g. `"192.168.1.70": "dev"`. Multiple IPs for one user share a budget. Identity comes from the connection; the client cannot choose it.
-- Locally, keep `admin_addr` at `127.0.0.1:9083` and `admin_url` at `https://127.0.0.1:9083`. For LAN access, configure the listener, the PC's public HTTPS address and allowed IPs in `users`; settings also rejects unknown IPs.
+- Locally, keep `admin_addr` at `127.0.0.1:9083` and `admin_url` at `http://127.0.0.1:9083`. For LAN access, configure the listener and the PC's HTTP address. Settings login is available to unregistered devices; admin APIs require the admin password and matching Host/Origin. The `users` mapping controls proxy and PAC access. An unknown device opening `/`, `/demo` or `/howto` on the PAC server is redirected to `admin_url`. Add device IPs to `users` in the JSON configuration and restart to enable proxy access; device registration is not yet available in the admin UI.
 - Allow ports 9080 and 9082 through the firewall only on a private network and from the test IPs.
 - On the phone, use PAC `http://192.168.1.50:9082/proxy.pac` and manually trust the public CA. PAC and trust options vary between Android versions and applications; the target is Chrome over Wi-Fi.
 
@@ -136,7 +136,7 @@ The normal process only reads the CA and startup configuration. It writes site r
 | X / demo origin | `POST /__pauseproxy/heartbeat` | Session bound to IP and user, instance, sequence |
 | X / demo origin | `GET /__pauseproxy/status` | Known IP |
 | PAC server | `GET /proxy.pac`, `/healthz`, `/ca-cert.pem`, `/demo` | Known IP, public CA only |
-| Settings | `GET /api/state` | HTTPS, allowed IP, exact Host/Origin, password in Bearer header |
+| Settings | `GET /api/state` | HTTP on trusted LAN, exact Host/Origin, password in Bearer header |
 | Settings | `GET/POST /api/sites`, `PATCH/DELETE /api/sites/{domain}` | Token, Host/Origin and JSON |
 | Settings | `GET/PUT /api/bypass-domains` | Same; media exceptions |
 | Settings | `PATCH /api/limits` | 410: use the site editor |
@@ -168,13 +168,13 @@ The client is injected at the beginning of HTML head with a CSP nonce, before si
 
 Run JavaScript tests with Node.js: `node --test web/client_test.cjs web/admin_test.cjs`. Client tests use controlled clocks to check one-minute inactivity, real versus synthetic interactions, focus, hiding, history restoration, blocking and clicks without waiting a minute. Admin tests check the rule editor, presets, validation, protection of unsaved changes, saving and list actions; no extra packages are needed.
 
-## Signing in and HTTPS settings
+## Signing in and LAN settings
 
 Set a nonempty `admin_password` in the configuration before startup. The example value is intentionally empty: there is no shared default password. Do not commit the real password. `bootstrap-ca` does not need it.
 
-Before opening settings for the first time, import the public CA from `ca_dir/ca-cert.pem` or download it from `http://127.0.0.1:9082/ca-cert.pem`. HTTPS settings uses the same CA. The password stays only in page memory; reloading or signing out requires signing in again.
+Settings uses HTTP on the trusted LAN by default and requires no browser certificate. Import the public CA from `ca_dir/ca-cert.pem` or download it from `http://127.0.0.1:9082/ca-cert.pem` before browsing proxied HTTPS sites. Explicit HTTPS admin URLs remain supported for existing configurations. The password stays only in page memory; reloading or signing out requires signing in again.
 
-For a phone, set, for example, `admin_addr: "0.0.0.0:9083"` and `admin_url: "https://192.168.1.50:9083"`, using your PC's LAN IP. Add both phone and PC IPs to `users`. Use the exact `admin_url` on both devices. Allow firewall access to ports 9080, 9082 and 9083 only for the required devices. The `/howto#android` web guide contains a complete example and CA installation steps.
+For a phone, set, for example, `admin_addr: "0.0.0.0:9083"` and `admin_url: "http://192.168.1.50:9083"`, using your PC's LAN IP. Add both phone and PC IPs to `users`. Use the exact `admin_url` on both devices. Allow firewall access to ports 9080, 9082 and 9083 only for the required devices. The `/howto#android` web guide contains a complete example and CA installation steps.
 
 Settings has Overview, Sites & limits, Media exceptions and Connection tabs. The countdown uses `m:ss` / `h:mm:ss`; a separate gear opens `admin_url/#sites`.
 

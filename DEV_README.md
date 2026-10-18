@@ -1,6 +1,6 @@
 # PauseProxy — developer guide
 
-This document describes the current implementation, its invariants, testing and known issues. For startup and browser setup, see [README.md](README.md) and the [howto page](https://127.0.0.1:9083/howto).
+This document describes the current implementation, its invariants, testing and known issues. For startup and browser setup, see [README.md](README.md) and the [howto page](http://127.0.0.1:9083/howto).
 
 ## Local development
 
@@ -61,7 +61,7 @@ Files in `web/` are embedded in the binary with `go:embed`. After changing them,
 | `web/` | Embedded HTML/CSS/JS and Node.js client tests |
 | `scripts/`, `run_test.sh` | Toolchain setup and development commands |
 
-Default ports: proxy **9080**, public server **9082**, settings **9083**. Settings uses HTTPS and the configured `admin_password`; the password has no default and is never printed to the console.
+Default ports: proxy **9080**, public server **9082**, settings **9083**. Settings defaults to HTTP on the trusted LAN and uses the configured `admin_password`; the password has no default and is never printed to the console.
 
 ## Request flow and MITM selection
 
@@ -145,9 +145,9 @@ These cases have regression tests in `internal/mitm/addon_test.go`. A previous Y
 
 ## API and security boundaries
 
-The admin API requires the password in a Bearer header and checks Host/Origin. Rules: `GET/POST /api/sites`, `PATCH/DELETE /api/sites/{domain}`, `GET/PUT /api/bypass-domains`. Legacy `PATCH /api/limits` returns 410. List bodies are limited to 64 KiB, others to 4 KiB; JSON is validated. `/howto` and `/connection` require no sign-in but remain behind settings access checks; they contain neither a password nor a private key.
+The admin API requires the password in a Bearer header and checks Host/Origin independently of the proxy `users` mapping. Unregistered devices can open the login page and authenticate; the proxy and PAC still require a configured user. Unknown devices opening `/`, `/demo` or `/howto` on the public listener redirect to `admin_url`; API and PAC requests retain their 403 responses. Rules: `GET/POST /api/sites`, `PATCH/DELETE /api/sites/{domain}`, `GET/PUT /api/bypass-domains`. Legacy `PATCH /api/limits` returns 410. List bodies are limited to 64 KiB, others to 4 KiB; JSON is validated. `/howto` and `/connection` require no sign-in but retain Host/Origin checks; they contain neither a password nor a private key. Device registration still requires editing JSON and restarting.
 
-Client endpoints live under `/__pauseproxy/` on the target origin and demo server. The demo can select a site with `?site=youtube.com`. Identity comes from the connection and configured IP mapping. For a phone, set `admin_addr` to the LAN interface or a wildcard, `admin_url` to the PC's HTTPS address, and allow the device in `users`; see howto.
+Client endpoints live under `/__pauseproxy/` on the target origin and demo server. The demo can select a site with `?site=youtube.com`. Identity comes from the connection and configured IP mapping. For a phone, set `admin_addr` to the LAN interface or a wildcard, `admin_url` to the PC's HTTP address, and allow the device in `users`; see howto.
 
 The MVP does not prevent deliberate circumvention: users can disable PAC and the page shares the client's origin. Do not commit admin passwords, CA keys, signed video URLs or users' network dumps.
 
@@ -173,13 +173,13 @@ As of October 4, 2026; these items are not a promise of a fix:
 
 Long stack traces often multiply console output. Group diagnostics by endpoint, status and main message; do not treat line count as the number of distinct errors. Remove tokens, cookies and signed URLs before sharing a dump. PauseProxy statistics are not intended as a network archive.
 
-## Signing in and HTTPS settings
+## Signing in and LAN settings
 
 Set a nonempty `admin_password` in the configuration before startup. The example value is intentionally empty: there is no shared default password. Do not commit the real password. `bootstrap-ca` does not need it.
 
-Before opening settings for the first time, import the public CA from `ca_dir/ca-cert.pem` or download it from `http://127.0.0.1:9082/ca-cert.pem`. HTTPS settings uses the same CA. The password stays only in page memory; reloading or signing out requires signing in again.
+Settings uses HTTP on the trusted LAN by default and requires no browser certificate. Import the public CA from `ca_dir/ca-cert.pem` or download it from `http://127.0.0.1:9082/ca-cert.pem` before browsing proxied HTTPS sites. Explicit HTTPS admin URLs remain supported for existing configurations. The password stays only in page memory; reloading or signing out requires signing in again.
 
-For a phone, set, for example, `admin_addr: "0.0.0.0:9083"` and `admin_url: "https://192.168.1.50:9083"`, using your PC's LAN IP. Add both phone and PC IPs to `users`. Use the exact `admin_url` on both devices. Allow firewall access to ports 9080, 9082 and 9083 only for the required devices. The `/howto#android` web guide contains a complete example and CA installation steps.
+For a phone, set, for example, `admin_addr: "0.0.0.0:9083"` and `admin_url: "http://192.168.1.50:9083"`, using your PC's LAN IP. Add both phone and PC IPs to `users`. Use the exact `admin_url` on both devices. Allow firewall access to ports 9080, 9082 and 9083 only for the required devices. The `/howto#android` web guide contains a complete example and CA installation steps.
 
 Settings has Overview, Sites & limits, Media exceptions and Connection tabs. The countdown uses `m:ss` / `h:mm:ss`; a separate gear opens `admin_url/#sites`.
 
