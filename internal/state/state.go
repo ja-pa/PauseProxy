@@ -355,26 +355,39 @@ func (s *Store) Status(user string, selected ...string) Status {
 	return s.status(user, site, t)
 }
 
+// Timeline settings are shared by every user's row for the same site.
+type TimelineRule struct {
+	BaseBudget       int  `json:"base_budget_seconds"`
+	GrayscaleEnabled bool `json:"grayscale_enabled"`
+	GrayscaleAfter   int  `json:"grayscale_after_seconds"`
+	BlurEnabled      bool `json:"blur_enabled"`
+	BlurAfter        int  `json:"blur_after_seconds"`
+	ExtraEnabled     bool `json:"extra_time_enabled"`
+	ExtraSeconds     int  `json:"extra_time_seconds"`
+}
 type Snapshot struct {
-	Groups   []GroupOverview `json:"group_overview"`
-	Instance string          `json:"instance_id"`
-	Counters []Counter       `json:"counters"`
-	Limits   map[string]int  `json:"limits"`
-	Sessions int             `json:"sessions"`
-	Date     string          `json:"date"`
-	Overview []OverviewRow   `json:"overview"`
+	TimelineRules map[string]TimelineRule `json:"timeline_rules"`
+	Groups        []GroupOverview         `json:"group_overview"`
+	Instance      string                  `json:"instance_id"`
+	Counters      []Counter               `json:"counters"`
+	Limits        map[string]int          `json:"limits"`
+	Sessions      int                     `json:"sessions"`
+	Date          string                  `json:"date"`
+	Overview      []OverviewRow           `json:"overview"`
 }
 
 type OverviewRow struct {
-	SiteBudget float64 `json:"site_budget_seconds"`
-	GroupID    string  `json:"group_id"`
-	BudgetMode string  `json:"budget_mode"`
-	User       string  `json:"user"`
-	Site       string  `json:"site"`
-	Used       float64 `json:"used_seconds"`
-	Budget     float64 `json:"budget_seconds"`
-	Remaining  float64 `json:"remaining_seconds"`
-	State      string  `json:"state"`
+	ExtraGranted       float64 `json:"extra_time_granted_seconds"`
+	ExtraUsesRemaining int     `json:"extra_time_uses_remaining"`
+	SiteBudget         float64 `json:"site_budget_seconds"`
+	GroupID            string  `json:"group_id"`
+	BudgetMode         string  `json:"budget_mode"`
+	User               string  `json:"user"`
+	Site               string  `json:"site"`
+	Used               float64 `json:"used_seconds"`
+	Budget             float64 `json:"budget_seconds"`
+	Remaining          float64 `json:"remaining_seconds"`
+	State              string  `json:"state"`
 }
 
 type GroupOverview struct {
@@ -397,8 +410,10 @@ func (s *Store) Snapshot() Snapshot {
 		cs = append(cs, *c)
 	}
 	ls := map[string]int{}
+	timelineRules := make(map[string]TimelineRule, len(s.rules.Sites))
 	for _, v := range s.rules.Sites {
 		ls[v.Domain] = v.Seconds
+		timelineRules[v.Domain] = TimelineRule{v.Seconds, v.GrayscaleEnabled, v.GrayscaleAfter, v.BlurEnabled, v.BlurAfter, v.ExtraEnabled, v.ExtraSeconds}
 	}
 	date := t.In(s.loc).Format("2006-01-02")
 	uniqueUsers := map[string]bool{}
@@ -453,11 +468,16 @@ func (s *Store) Snapshot() Snapshot {
 					}
 				}
 			}
+			extraRemaining := 0
+			if rule.ExtraEnabled && rule.Mode == "limit" && rule.BudgetMode != "shared" {
+				extraRemaining = max(0, rule.ExtraMaxUses-c.ExtraUses)
+			}
 			rows = append(rows, OverviewRow{User: user, Site: rule.Domain, Used: c.Seconds, GroupID: rule.GroupID, BudgetMode: rule.BudgetMode,
-				Budget: budget, SiteBudget: dailyBudget(rule, c), Remaining: status.Remaining, State: state})
+				Budget: budget, SiteBudget: dailyBudget(rule, c), Remaining: status.Remaining, State: state,
+				ExtraGranted: dailyBudget(rule, c) - float64(rule.Seconds), ExtraUsesRemaining: extraRemaining})
 		}
 	}
-	return Snapshot{Instance: s.instance, Counters: cs, Limits: ls, Sessions: len(s.sessions), Date: date, Overview: rows, Groups: groups}
+	return Snapshot{TimelineRules: timelineRules, Instance: s.instance, Counters: cs, Limits: ls, Sessions: len(s.sessions), Date: date, Overview: rows, Groups: groups}
 }
 func (s *Store) SetLimit(domain string, n int) error {
 	return s.ChangeRules(func(d *sites.Document) error {

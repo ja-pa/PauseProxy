@@ -357,7 +357,9 @@ func (a *API) Admin(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/connection" && r.Method == "GET" {
 		_, port, _ := net.SplitHostPort(a.Config.PACAddr)
 		base := "http://" + net.JoinHostPort(u.Hostname(), port)
-		JSON(w, 200, map[string]string{"pac": base + "/proxy.pac", "ca": base + "/ca-cert.pem", "demo": base + "/demo"})
+		details := map[string]string{"pac": base + "/proxy.pac", "ca": base + "/ca-cert.pem", "demo": base + "/demo"}
+		a.certificateDetails(details)
+		JSON(w, 200, details)
 		return
 	}
 	auth := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -373,6 +375,15 @@ func (a *API) Admin(w http.ResponseWriter, r *http.Request) {
 		}{a.State.Snapshot(), a.Diagnostics()})
 	case r.URL.Path == "/api/sites" && r.Method == "GET":
 		JSON(w, 200, a.Rules())
+	case r.URL.Path == "/api/sites" && r.Method == "PUT":
+		var document sites.Document
+		if !decodeLimit(w, r, &document, 1024*1024) {
+			return
+		}
+		a.change(w, func(d *sites.Document) error {
+			*d = document.Clone()
+			return nil
+		})
 	case r.URL.Path == "/api/groups" && r.Method == "POST":
 		var b struct {
 			Name    string `json:"name"`

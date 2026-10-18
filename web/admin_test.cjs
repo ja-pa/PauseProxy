@@ -6,22 +6,25 @@ const vm = require('node:vm');
 // Exercise the actual admin script and HTML defaults with a small DOM fixture.
 // Real browser layout, focus and form submission are checked separately.
 function fixture(initialSites = []) {
-  const nodes = new Map(), requests = [], dialogs = [], events = new Map();
+  const nodes = new Map(), requests = [], dialogs = [], events = new Map(), downloads = [], blobs = [];
   let activeElement, allowDiscard = true, failure = '', pending, snapshot;
   let stored = {sites: structuredClone(initialSites), groups: [], bypass_domains: []};
   function node(tag, attrs = {}) {
     const listeners = new Map();
     const n = {tag, attrs, children: [], dataset: {}, hidden: 'hidden' in attrs,
       disabled: 'disabled' in attrs, checked: 'checked' in attrs, value: attrs.value || '',
-      style: {}, type: attrs.type || '', textContent: '', className: '', isConnected: true,
-      append(...children) { this.children.push(...children); },
-      replaceChildren(...children) { this.children = children; },
+      open: false, style: {}, type: attrs.type || '', textContent: '', className: '', isConnected: true,
+      append(...children) { for(const c of children){c.remove();c.parent=this;this.children.push(c);} },
+      remove() {if(this.parent){this.parent.children=this.parent.children.filter(c=>c!==this);this.parent=null;}},
+      insertBefore(c,before) {c.remove();c.parent=this;const i=before?this.children.indexOf(before):this.children.length;this.children.splice(i,0,c);},
+      replaceChildren(...children) {for(const c of this.children)c.parent=null;this.children=[];this.append(...children);},
       setAttribute(k, v) { this.attrs[k] = String(v); },
       getAttribute(k) { return this.attrs[k] ?? null; },
       removeAttribute(k) { delete this.attrs[k]; },
       addEventListener(k, fn) { if (!listeners.has(k)) listeners.set(k, []); listeners.get(k).push(fn); },
       emit(k) { for (const fn of listeners.get(k) || []) fn(); },
       focus() { activeElement = this; }, scrollIntoView() {},
+      click() { if (tag === 'a') downloads.push({href: this.href, download: this.download}); if (this.onclick) return this.onclick(); },
       querySelectorAll(selector) {
         return this.children.flatMap(c => [...(selector === c.tag ? [c] : []), ...c.querySelectorAll(selector)]);
       }
@@ -43,8 +46,12 @@ function fixture(initialSites = []) {
   const defaults = [...nodes.values()].filter(n => formIds.has(n.attrs.id)).map(n => [n, n.value, n.checked]);
   get('site-form').reset = () => { for (const [n, value, checked] of defaults) { n.value = value; n.checked = checked; } };
   const tabs = [...nodes.values()].filter(n => n.attrs.role === 'tab');
-  const ctx = vm.createContext({URL, console,
-    document: {getElementById: get, createElement: tag => node(tag), querySelectorAll: () => tabs},
+  class DownloadURL extends URL {
+    static createObjectURL(blob) {blobs.push(blob); return 'blob:test';}
+    static revokeObjectURL() {}
+  }
+  const ctx = vm.createContext({URL: DownloadURL, Blob, console, setTimeout,
+    document: {body: node('body'), getElementById: get, createElement: tag => node(tag), querySelectorAll: () => tabs},
     window: {addEventListener: (name, fn) => events.set(name, fn)},
     location: {hash: '#sites'},
     setInterval() { return 1; }, clearInterval() {},
@@ -64,7 +71,8 @@ function fixture(initialSites = []) {
         else if (method === 'DELETE') stored.groups = stored.groups.filter(g => g.id !== path.split('/').pop());
         return {ok: true, status: 200, json: async () => structuredClone(stored)};
       }
-      if (method === 'POST') {
+      if (path === '/api/sites' && method === 'PUT') stored = structuredClone(body);
+      else if (method === 'POST') {
         const {bypass_domains = [], ...site} = body;
         stored.sites.push(site); stored.bypass_domains.push(...bypass_domains);
       } else if (method === 'PATCH') {
@@ -79,7 +87,7 @@ function fixture(initialSites = []) {
   ctx.initialRules = structuredClone(stored);
   vm.runInContext("password = 'test'; applyRules(initialRules)", ctx);
   const run = code => vm.runInContext(code, ctx);
-  return {get, requests, dialogs, run, events,
+  return {get, requests, dialogs, run, events, downloads, blobs,
     focus: () => activeElement,
     submit: () => get('site-form').onsubmit({preventDefault() {}}),
     allowDiscard(value) { allowDiscard = value; }, fail(message) { failure = message; },
@@ -90,6 +98,82 @@ function fixture(initialSites = []) {
 const site = (domain = 'x.com') => ({domain, domains: [domain, 'www.' + domain], enabled: true,
   mode: 'limit', daily_limit_seconds: 900, grayscale_enabled: false, grayscale_after_seconds: 0,
   extra_time_enabled: false, extra_time_seconds: 180, extra_time_max_uses: 1});
+
+const configDocument = () => ({version: 2, sites: [{...site('example.com'), group_id: 'fun', budget_mode: 'capped',
+  blur_enabled: true, blur_after_seconds: 100, extra_time_method: 'reflection'}],
+  groups: [{id: 'fun', name: 'Fun', daily_limit_seconds: 1800}], bypass_domains: ['media.example.com']});
+function selectConfig(f, contents = JSON.stringify(configDocument()), size = Buffer.byteLength(contents)) {
+  f.get('config-file').files = [{size, text: async () => contents}];
+  f.get('config-file').value = 'selected.json';
+  return f.get('config-file').onchange();
+}
+
+test('download reads saved rules without exporting drafts or credentials', async () => {
+  const f = fixture([site()]); f.get('add-site').onclick(); f.get('domain').value = 'draft.example';
+  await f.get('download-config').onclick();
+  assert.deepEqual(f.downloads, [{href: 'blob:test', download: 'pauseproxy-sites.json'}]);
+  const text = await f.blobs[0].text(), saved = JSON.parse(text);
+  assert.equal(saved.sites[0].domain, 'x.com'); assert.ok(text.includes('\n  "sites"'));
+  assert.ok(!text.includes('draft.example')); assert.ok(!text.includes('password'));
+  assert.equal(f.get('domain').value, 'draft.example'); assert.equal(f.dialogs.length, 0);
+  f.fail('offline'); await f.get('download-config').onclick();
+  assert.match(f.get('config-error').textContent, /offline/); assert.equal(f.downloads.length, 1);
+});
+
+test('import replaces complete config, refreshes media and stats, and allows selecting same file again', async () => {
+  const f = fixture([site()]); f.setSnapshot(overviewData([]));
+  await selectConfig(f);
+  assert.deepEqual(f.requests.find(r => r.method === 'PUT').body, configDocument());
+  assert.equal(f.get('sites').children[0].children[0].children[0].textContent, 'example.com');
+  assert.equal(f.get('bypass').value, 'media.example.com');
+  assert.equal(f.get('site-editor').hidden, true); assert.equal(f.get('group-editor').hidden, true);
+  assert.equal(f.get('config-file').value, ''); assert.match(f.get('notice').textContent, /Imported config/);
+  assert.ok(f.requests.some(r => r.path === '/api/state'));
+  await selectConfig(f); assert.equal(f.requests.filter(r => r.method === 'PUT').length, 2);
+});
+
+test('canceling import or draft discard preserves editors and sends no mutation', async () => {
+  for (const draft of ['site', 'group', 'media']) {
+    const f = fixture([site()]);
+    if (draft === 'site') {f.get('add-site').onclick(); f.get('domain').value = 'draft.example';}
+    if (draft === 'group') {f.get('add-group').onclick(); f.get('group-name').value = 'Draft';}
+    if (draft === 'media') f.get('bypass').value = 'draft.example';
+    f.allowDiscard(false); await selectConfig(f);
+    assert.equal(f.requests.length, 0); assert.equal(f.get('config-file').value, '');
+    // Accept replacement but decline the second, draft-specific confirmation.
+    f.run('confirm = message => !message.startsWith("Discard")');
+    await selectConfig(f); assert.equal(f.requests.length, 0);
+    if (draft === 'site') {assert.equal(f.get('site-editor').hidden, false); assert.equal(f.get('domain').value, 'draft.example');}
+    if (draft === 'group') {assert.equal(f.get('group-editor').hidden, false); assert.equal(f.get('group-name').value, 'Draft');}
+    if (draft === 'media') assert.equal(f.get('bypass').value, 'draft.example');
+  }
+});
+
+test('import handles bad files and server errors without losing draft or rules', async () => {
+  const f = fixture([site()]); f.get('add-site').onclick(); f.get('domain').value = 'draft.example';
+  await selectConfig(f, '{}', 1024*1024 + 1); assert.match(f.get('config-error').textContent, /1 MiB/);
+  await selectConfig(f, '{'); assert.match(f.get('config-error').textContent, /valid JSON/);
+  for (const text of ['null', '[]', '42']) {await selectConfig(f, text); assert.match(f.get('config-error').textContent, /JSON object/);}
+  f.get('config-file').files = [{size: 1, text: async () => {throw Error('denied');}}];
+  await f.get('config-file').onchange(); assert.match(f.get('config-error').textContent, /Could not read/);
+  assert.equal(f.requests.length, 0);
+  f.fail('invalid group reference'); await selectConfig(f);
+  assert.match(f.get('config-error').textContent, /invalid group reference/);
+  assert.equal(f.get('site-editor').hidden, false); assert.equal(f.get('domain').value, 'draft.example');
+  assert.equal(f.run('rules.sites[0].domain'), 'x.com'); assert.equal(f.get('import-config').disabled, false);
+});
+
+test('file reading and importing disable concurrent mutations; refresh failure reports saved import', async () => {
+  const f = fixture([site()]); let finish;
+  f.get('config-file').files = [{size: 10, text: () => new Promise(resolve => {finish = resolve;})}];
+  const pending = f.get('config-file').onchange();
+  for (const id of ['download-config','import-config','add-site','add-group','save-bypass','reset','logout']) assert.equal(f.get(id).disabled, true);
+  await f.get('reset').onclick(); await f.get('save-bypass').onclick(); assert.equal(f.requests.length, 0);
+  finish(JSON.stringify(configDocument())); await pending;
+  assert.match(f.get('notice').textContent, /Imported config/);
+  assert.match(f.get('config-error').textContent, /imported, but refreshing statistics failed/);
+  assert.equal(f.get('import-config').disabled, false);
+});
 
 test('new site is hidden until requested; defaults, Enter handler and successful save', async () => {
   const f = fixture();
@@ -202,46 +286,21 @@ const overviewRow = (values = {}) => ({user: 'dev', site: 'x.com', used_seconds:
 const overviewData = (rows) => ({date: '2026-10-15', overview: rows, sessions: 0,
   instance_id: 'test', diagnostics: {html_injections: 0, injection_failures: 0, sessions_created: 0, heartbeats_received: 0}});
 
-test('overview renders remaining budget, exact time and accessible progress labels instead of counters', async () => {
-  const f = fixture(); f.setSnapshot(overviewData([overviewRow({remaining_seconds: 754, used_seconds: 146})]));
-  await f.run('refresh()');
-  assert.equal(f.get('overview-date').textContent, '2026-10-15');
-  assert.equal(f.get('overview-date').getAttribute('datetime'), '2026-10-15');
-  const cells = f.get('rows').children[0].children;
-  assert.equal(cells.length, 3); assert.equal(cells[0].textContent, 'dev'); assert.equal(cells[1].textContent, 'x.com');
-  const [label, progress] = cells[2].children;
-  assert.equal(label.textContent, '13 min left of 15 min');
-  assert.equal(progress.max, 900); assert.equal(progress.value, '754');
-  assert.equal(progress.getAttribute('aria-label'), 'Time remaining for dev on x.com');
-  assert.equal(progress.getAttribute('aria-valuetext'), label.textContent);
-  assert.match(progress.className, /available/);
+test('overview renders a compact accessible timeline and uses remaining budget text', async () => {
+ const f=fixture();f.setSnapshot(overviewData([overviewRow({remaining_seconds:754,used_seconds:146})]));await f.run('refresh()');
+ const cells=f.get('rows').children[0].children;assert.equal(cells.length,3);assert.equal(cells[0].textContent,'dev');assert.equal(cells[1].textContent,'x.com');
+ const [label,track]=cells[2].children;assert.equal(label.textContent,'13 min left of 15 min');assert.equal(track.getAttribute('role'),'img');
+ assert.match(track.getAttribute('aria-label'),/Used: 2 min 26 sec/);assert.equal(track.children[1].style.width,(146/900*100)+'%');
+ assert.equal(f.get('overview-date').getAttribute('datetime'),'2026-10-15');
 });
-
-test('overview marks the 20 percent boundary and zero budgets and clamps progress values', async () => {
-  const f = fixture();
-  f.setSnapshot(overviewData([overviewRow({remaining_seconds: 181}), overviewRow({remaining_seconds: 180}),
-    overviewRow({remaining_seconds: 0, state: 'limit_reached'}), overviewRow({remaining_seconds: -50}),
-    overviewRow({remaining_seconds: 1000})]));
-  await f.run('refresh()');
-  const budgets = f.get('rows').children.map(tr => tr.children[2].children);
-  assert.match(budgets[0][1].className, /available/); assert.match(budgets[1][1].className, /low/);
-  assert.match(budgets[2][1].className, /exhausted/); assert.equal(budgets[2][2].textContent, 'Daily limit reached');
-  assert.equal(budgets[3][1].value, '0'); assert.equal(budgets[4][1].value, '900');
+test('overview clamps live consumption and preserves blocked/paused/scheduled states',async()=>{
+ const f=fixture(),rows=[overviewRow({site:'paused.com',state:'paused'}),overviewRow({site:'blocked.com',state:'always_blocked'}),
+ overviewRow({site:'scheduled.com',state:'scheduled_break',remaining_seconds:300}),overviewRow({site:'used.com',used_seconds:1000,remaining_seconds:0,state:'limit_reached'}),overviewRow({site:'negative.com',used_seconds:-5})];
+ f.setSnapshot(overviewData(rows));await f.run('refresh()');const budgets=f.get('rows').children.map(tr=>tr.children[2].children);
+ assert.equal(budgets[0][1].getAttribute('data-state'),'paused');assert.equal(budgets[0][2].textContent,'Paused');
+ assert.equal(budgets[1][1].hidden,true);assert.equal(budgets[1][2].textContent,'Always blocked');
+ assert.equal(budgets[2][2].textContent,'Scheduled break');assert.equal(budgets[3][1].children[1].style.width,'100%');assert.equal(budgets[4][1].children[1].style.width,'0%');
 });
-
-test('overview distinguishes paused, always-blocked and scheduled rules and displays bonus budgets', async () => {
-  const f = fixture();
-  f.setSnapshot(overviewData([overviewRow({state: 'paused'}), overviewRow({state: 'always_blocked'}),
-    overviewRow({state: 'scheduled_break', remaining_seconds: 300}),
-    overviewRow({budget_seconds: 1080, remaining_seconds: 180, used_seconds: 900})]));
-  await f.run('refresh()');
-  const budgets = f.get('rows').children.map(tr => tr.children[2].children);
-  assert.match(budgets[0][1].className, /paused/); assert.equal(budgets[0][2].textContent, 'Paused');
-  assert.equal(budgets[1].length, 1); assert.equal(budgets[1][0].textContent, 'Always blocked');
-  assert.equal(budgets[2][1].value, '300'); assert.equal(budgets[2][2].textContent, 'Scheduled break');
-  assert.equal(budgets[3][0].textContent, '3 min left of 18 min');
-});
-
 test('overview time labels use minutes and hours without seconds', () => {
   const f = fixture();
   for (const [seconds, expected] of [[0, '0 min'], [30, '<1 min'], [60, '1 min'],
@@ -293,24 +352,15 @@ test('site budget modes preserve draft values and suppress extras only while sha
   assert.equal(f.requests.at(-1).body.group_id,'group-1');
 });
 
-test('group overview shows one shared bar, member usage and separate independent budgets and retains expansion', async () => {
-  const f = fixture();
-  const data=overviewData([
-    overviewRow({group_id:'fun',budget_mode:'shared',used_seconds:60}),
-    overviewRow({site:'youtube.com',group_id:'fun',budget_mode:'capped',site_budget_seconds:300}),
-    overviewRow({site:'independent.example',group_id:'fun',budget_mode:'independent'})
-  ]);
-  data.group_overview=[{user:'dev',group_id:'fun',name:'Fun',budget_seconds:1800,remaining_seconds:1740,state:'available'}];
-  f.setSnapshot(data); await f.run('refresh()');
-  assert.equal(f.get('rows').children.length,2);
-  const details=f.get('rows').querySelectorAll('details')[0];
-  assert.equal(details.open,false); assert.match(details.children[0].textContent,/3 sites in Fun/);
-  assert.equal(f.get('rows').querySelectorAll('progress').length,3);
-  assert.match(details.children[1].children[1].textContent,/1 min used today/);
-  details.open=true; await f.run('refresh()');
-  assert.equal(f.get('rows').querySelectorAll('details')[0].open,true);
+test('group overview creates members lazily and retains expansion, focus and nodes',async()=>{
+ const f=fixture(),data=overviewData([overviewRow({group_id:'fun',budget_mode:'shared',used_seconds:60}),overviewRow({site:'youtube.com',group_id:'fun',budget_mode:'capped',site_budget_seconds:300}),overviewRow({site:'independent.example',group_id:'fun',budget_mode:'independent'})]);
+ data.group_overview=[{user:'dev',group_id:'fun',name:'Fun',budget_seconds:1800,remaining_seconds:1740,state:'available'}];
+ f.setSnapshot(data);await f.run('refresh()');const details=f.get('rows').querySelectorAll('details')[0];
+ assert.equal(details.open,false);assert.equal(details.children[1].children.length,0);assert.equal(f.get('rows').querySelectorAll('progress').length,1);
+ details.open=true;details.emit('toggle');assert.equal(details.children[1].children.length,3);
+ const member=details.children[1].children[0];assert.match(member.children[2].textContent,/1 min used today/);
+ details.children[0].focus();await f.run('refresh()');assert.equal(f.get('rows').querySelectorAll('details')[0],details);assert.equal(details.open,true);assert.equal(f.focus(),details.children[0]);assert.equal(details.children[1].children[0],member);
 });
-
 test('blur defaults, validation, draft protection and persistence are independent', async () => {
  const f = fixture([site()]); f.run('openEditor(rules.sites[0])');
  assert.equal(f.get('blur-enabled').checked, false); assert.equal(f.get('blur-fields').hidden, true);
@@ -443,4 +493,41 @@ test('remaining distinguishes blocked and unavailable data, reset prevents dupli
  assert.equal(reset.disabled,true);assert.equal(f.get('sites-user').disabled,true);await reset.onclick();
  release();await saving;assert.equal(f.requests.filter(r=>r.path.endsWith('/reset')).length,1);
  f.run('stateUnavailable=true;updateSiteRemaining()');assert.equal(f.get('sites').children[0].children[4].textContent,'Unavailable');assert.equal(reset.disabled,true);
+});
+
+const timelineRule=(values={})=>({base_budget_seconds:900,grayscale_enabled:false,blur_enabled:false,extra_time_enabled:false,extra_time_seconds:180,...values});
+for (const [gray,blur,effects] of [[null,null,['normal']],[300,null,['normal','grayscale']],[null,300,['normal','blur']],[300,600,['normal','grayscale','combined']],[600,300,['normal','blur','combined']],[300,300,['normal','combined']]])
+ test(`live timeline colors grayscale=${gray} blur=${blur}`,()=>{
+ const f=fixture();const m=f.run(`overviewTimelineModel({budget_mode:'independent'},${JSON.stringify(timelineRule({grayscale_enabled:gray!==null,grayscale_after_seconds:gray,blur_enabled:blur!==null,blur_after_seconds:blur}))})`);
+ assert.deepEqual(Array.from(m.segments,s=>s.effect),effects);assert.equal(m.total,900);
+ });
+test('overview reuses bands for usage changes and recomputes them for grants/settings/day reset',async()=>{
+ const f=fixture(),data=overviewData([overviewRow({used_seconds:299})]);data.timeline_rules={'x.com':timelineRule({grayscale_enabled:true,grayscale_after_seconds:300,extra_time_enabled:true})};data.overview[0].extra_time_uses_remaining=2;
+ f.setSnapshot(data);await f.run('refresh()');const row=f.get('rows').children[0],track=row.children[2].children[1],bands=track.children[0],first=bands.children[0];
+ assert.equal(bands.children.length,3);assert.match(row.children[2].children[3].textContent,/Optional extra up to \+6 min/);
+ for(const used of [300,301,900,1000]){data.overview[0].used_seconds=used;f.setSnapshot(data);await f.run('refresh()');assert.equal(f.get('rows').children[0],row);assert.equal(bands.children[0],first);}
+ data.overview[0].extra_time_granted_seconds=240;data.overview[0].extra_time_uses_remaining=1;f.setSnapshot(data);await f.run('refresh()');assert.notEqual(bands.children[0],first);assert.match(row.children[2].children[3].textContent,/Extra granted \+4 min/);
+ data.timeline_rules['x.com'].blur_enabled=true;data.timeline_rules['x.com'].blur_after_seconds=450;f.setSnapshot(data);await f.run('refresh()');assert.ok(bands.children.some(n=>n.className.includes('combined')));
+ data.date='2026-10-16';data.overview[0].used_seconds=0;data.overview[0].extra_time_granted_seconds=0;data.overview[0].extra_time_uses_remaining=2;f.setSnapshot(data);await f.run('refresh()');assert.equal(track.children[1].style.width,'0%');
+});
+test('shared timelines stop at last threshold and capped text keeps group-effective remaining',()=>{
+ const f=fixture();let m=f.run(`overviewTimelineModel({budget_mode:'shared',used_seconds:1000,extra_time_granted_seconds:100,extra_time_uses_remaining:2},${JSON.stringify(timelineRule({blur_enabled:true,blur_after_seconds:300,extra_time_enabled:true}))})`);
+ assert.equal(m.total,300);assert.equal(m.usable,300);assert.match(m.summary,/Own time/);assert.ok(m.segments.every(s=>!s.optional));
+ m=f.run(`overviewTimelineModel({budget_mode:'shared'},${JSON.stringify(timelineRule())})`);assert.equal(m.total,0);
+});
+test('simultaneous refresh requests share one in-flight API call',async()=>{
+ const f=fixture();f.setSnapshot(overviewData([overviewRow()]));const release=f.hold();const a=f.run('refresh()'),b=f.run('refresh()');assert.equal(f.requests.filter(r=>r.path==='/api/state').length,1);release();await Promise.all([a,b]);
+});
+test('maximum size overview keeps node count stable across unchanged snapshots',async()=>{
+ const f=fixture(),rows=[];for(let user=0;user<64;user++)for(let site=0;site<32;site++)rows.push(overviewRow({user:'user'+user,site:'site'+site+'.com'}));
+ f.setSnapshot(overviewData(rows));await f.run('refresh()');const original=[...f.get('rows').children],nodes=()=>{let count=0;const visit=n=>{count++;for(const c of n.children)visit(c)};visit(f.get('rows'));return count};const before=nodes();
+ for(let i=0;i<5;i++)await f.run('refresh()');assert.equal(nodes(),before);assert.equal(f.get('rows').children.length,2048);assert.ok(original.every((n,i)=>f.get('rows').children[i]===n));
+});
+
+test('closed groups defer updates until reopening and use the latest snapshot',async()=>{
+ const f=fixture(),data=overviewData([overviewRow({group_id:'fun',budget_mode:'shared',used_seconds:10})]);data.group_overview=[{user:'dev',group_id:'fun',name:'Fun',budget_seconds:1800,remaining_seconds:1790,state:'available'}];data.timeline_rules={'x.com':timelineRule({blur_enabled:true,blur_after_seconds:300})};
+ f.setSnapshot(data);await f.run('refresh()');const details=f.get('rows').querySelectorAll('details')[0];details.open=true;details.emit('toggle');const member=details.children[1].children[0];
+ details.open=false;details.emit('toggle');data.overview[0].used_seconds=120;f.setSnapshot(data);await f.run('refresh()');assert.equal(member.children[2].textContent,'<1 min used today');
+ details.open=true;details.emit('toggle');assert.equal(member.children[2].textContent,'2 min used today');
+ data.overview=[];f.setSnapshot(data);await f.run('refresh()');assert.equal(details.children[1].children.length,0);
 });

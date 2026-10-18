@@ -113,9 +113,10 @@ function duration(value) {
   return `${hours} h` + (rest ? ` ${rest} min` : '');
 }
 function updateSiteRemaining() {
-  const user = el('sites-user').value;
+  const user = el('sites-user').value, bySite = new Map();
+  for (const row of siteOverview) if (row.user === user) bySite.set(row.site,row);
   for (const [domain, td] of remainingCells) {
-    const row = siteOverview.find(r => r.user === user && r.site === domain);
+    const row = bySite.get(domain);
     td.textContent = stateUnavailable ? 'Unavailable' : !stateLoaded ? 'Loading…' : !row ? '—'
       : row.state === 'always_blocked' ? 'Always blocked'
       : duration(row.remaining_seconds) + (row.state === 'paused' ? ' · Paused' : row.state === 'scheduled_break' ? ' · Scheduled break' : '');
@@ -146,79 +147,181 @@ async function resetSiteStatistics(s) {
   } catch (error) { el('sites-error').textContent = error.message; }
   finally {setSiteBusy(false); const button = [...el('sites').querySelectorAll('button')].find(b => b.dataset.siteReset === s.domain); if (button) button.focus();}
 }
-async function refresh() {
-  const d = await api('/api/state'); if (!password) return;
-  drawOverview(d); updateSiteStatistics(d);
-  const g = d.diagnostics;
-  el('diagnostics').textContent = `Instance: ${d.instance_id} · sessions: ${d.sessions} · HTML injections: ${g.html_injections} · failures: ${g.injection_failures} · sessions created: ${g.sessions_created} · heartbeats: ${g.heartbeats_received}`;
-  el('overview-error').textContent = '';
+// A single in-flight refresh serves polling and explicit mutation refreshes.
+let refreshPending;
+function refresh() {
+  if (refreshPending) return refreshPending;
+  refreshPending = (async () => {
+    const d = await api('/api/state'); if (!password) return;
+    drawOverview(d); updateSiteStatistics(d);
+    const g = d.diagnostics;
+    setText(el('diagnostics'), `Instance: ${d.instance_id} · sessions: ${d.sessions} · HTML injections: ${g.html_injections} · failures: ${g.injection_failures} · sessions created: ${g.sessions_created} · heartbeats: ${g.heartbeats_received}`);
+    el('overview-error').textContent = '';
+  })().finally(() => { refreshPending = null; });
+  return refreshPending;
 }
-function drawOverview(d) {
-  el('overview-date').textContent = d.date;
-  el('overview-date').setAttribute('datetime', d.date);
-  el('meta').textContent = 'Daily budgets for all configured users and sites.';
-  const open = new Map([...el('rows').querySelectorAll('details')].map(n => [n.dataset.key, n.open]));
-  const focused = document.activeElement?.dataset?.groupSummary;
-  el('rows').replaceChildren();
-  const groups = d.group_overview || [];
-  const users = [...new Set([...d.overview.map(r => r.user), ...groups.map(g => g.user)])].sort();
-  for (const user of users) {
-    for (const group of groups.filter(g => g.user === user)) {
-      const key = JSON.stringify([user, group.group_id]);
-      const tr = document.createElement('tr'); tr.className = 'group-budget-row';
-      cell(tr, user); cell(tr, group.name); fillBudget(cell(tr, ''), {...group, site: 'group ' + group.name}); el('rows').append(tr);
-      const detailRow = document.createElement('tr'); detailRow.className = 'group-detail-row';
-      const td = cell(detailRow, ''); td.colSpan = 3;
-      const details = document.createElement('details'); details.dataset.key = key; details.open = open.get(key) || false;
-      const members = d.overview.filter(r => r.user === user && r.group_id === group.group_id);
-      const summary = document.createElement('summary'); summary.dataset.groupSummary = key;
-      summary.textContent = `${members.length} site${members.length === 1 ? '' : 's'} in ${group.name}`;
-      summary.setAttribute('aria-label', `Show sites in ${group.name} for ${user}`); details.append(summary);
-      for (const row of members) {
-        const member = document.createElement('section'); member.className = 'group-member';
-        const name = document.createElement('strong'); name.textContent = row.site;
-        const mode = document.createElement('small'); mode.textContent = budgetModeLabel(row.budget_mode) + ' · ' + duration(row.used_seconds) + ' used today';
-        member.append(name, mode);
-        if (row.budget_mode === 'shared') {
-          if (budgetStateLabels[row.state]) { const label = document.createElement('span'); label.className = 'budget-status ' + row.state; label.textContent = budgetStateLabels[row.state]; member.append(label); }
-        } else {
-          if (row.budget_mode === 'capped') { const cap = document.createElement('small'); cap.textContent = 'Site cap including granted extra time: ' + duration(row.site_budget_seconds); member.append(cap); }
-          fillBudget(member, row);
-        }
-        details.append(member);
-      }
-      td.append(details); el('rows').append(detailRow);
-      if (focused === key) summary.focus({preventScroll: true});
-    }
-    for (const row of d.overview.filter(r => r.user === user && !r.group_id)) {
-      const tr = document.createElement('tr'); cell(tr, row.user); cell(tr, row.site); fillBudget(cell(tr, ''), row); el('rows').append(tr);
-    }
-  }
-  if (!d.overview.length && !groups.length) {
-    const tr = document.createElement('tr');
-    cell(tr, 'No sites configured. Add a site in Sites & limits to see its daily budget.').colSpan = 3; el('rows').append(tr);
-  }
+const overviewEntries = new Map();
+function setHidden(node, hidden) { if (node.hidden !== hidden) node.hidden = hidden; }
+function setClass(node, name) { if (node.className !== name) node.className = name; }
+function setText(node, text) { if (node.textContent !== text) node.textContent = text; }
+function setAttr(node, name, value) {value = String(value); if (node.getAttribute(name) !== value) node.setAttribute(name, value);}
+function setStyle(node, name, value) {if (node.style[name] !== value) node.style[name] = value;}
+function overviewNode(tag, className, parent) {
+  const node = document.createElement(tag); node.className = className;
+  if (parent) parent.append(node); return node;
+}
+// Do not move or detach nodes on unchanged snapshots: this retains focus/open state.
+function reconcileNodes(parent, wanted) {
+  const keep = new Set(wanted);
+  for (const node of [...parent.children]) if (!keep.has(node)) node.remove();
+  for (let i = 0; i < wanted.length; i++) if (parent.children[i] !== wanted[i]) parent.insertBefore(wanted[i], parent.children[i] || null);
 }
 const budgetStateLabels = {paused: 'Paused', always_blocked: 'Always blocked', scheduled_break: 'Scheduled break', limit_reached: 'Daily limit reached', group_limit_reached: 'Group limit reached'};
-function fillBudget(remaining, row) {
-    remaining.className += ' budget-cell';
-    if (row.state !== 'always_blocked') {
-      const budget = Math.max(0, row.budget_seconds);
-      const seconds = Math.max(0, Math.min(budget, row.remaining_seconds));
-      const fraction = budget > 0 ? seconds / budget : 0;
-      const text = `${duration(seconds)} left of ${duration(budget)}`;
-      const label = document.createElement('span'); label.className = 'budget-text'; label.textContent = text;
-      const progress = document.createElement('progress');
-      progress.max = budget || 1; progress.value = seconds;
-      progress.className = 'budget-progress ' + (row.state === 'paused' ? 'paused' : seconds <= 0 ? 'exhausted' : fraction <= 0.2 ? 'low' : 'available');
-      progress.setAttribute('aria-label', `Time remaining for ${row.user} on ${row.site}`);
-      progress.setAttribute('aria-valuetext', (budgetStateLabels[row.state] ? budgetStateLabels[row.state] + '. ' : '') + text);
-      progress.title = text; remaining.append(label, progress);
+function timelineConfig(row, config) {
+  // The fallback keeps a readable budget when talking to an older server.
+  return config || {base_budget_seconds: row.site_budget_seconds ?? row.budget_seconds};
+}
+function overviewTimelineModel(row, rule) {
+  const shared = row.budget_mode === 'shared';
+  const gray = rule.grayscale_enabled ? rule.grayscale_after_seconds : null;
+  const blur = rule.blur_enabled ? rule.blur_after_seconds : null;
+  const filters = [gray != null && {kind:'grayscale', name:'Grayscale', at:gray}, blur != null && {kind:'blur', name:'Blur', at:blur}].filter(Boolean).sort((a,b) => a.at-b.at);
+  const base = shared ? Math.max(0,...filters.map(f => f.at)) : Math.max(0,rule.base_budget_seconds || 0);
+  const granted = !shared && rule.extra_time_enabled ? Math.max(0,row.extra_time_granted_seconds || 0) : 0;
+  const optional = !shared && rule.extra_time_enabled ? Math.max(0,row.extra_time_uses_remaining || 0) * rule.extra_time_seconds : 0;
+  const usable = base + granted, total = usable + optional;
+  const points = [...new Set([0,base,usable,total,...filters.map(f => f.at).filter(at => at >= 0 && at <= total)])].sort((a,b) => a-b);
+  const segments = points.slice(0,-1).map((start,i) => ({start,end:points[i+1], optional:start>=usable && !shared,
+    effect: gray != null && start>=gray ? (blur!=null && start>=blur ? 'combined':'grayscale') : blur!=null && start>=blur ? 'blur':'normal'}));
+  const summary = filters.map(f => `${f.name} from ${previewTime(f.at)}`);
+  if (granted) summary.push(`Extra granted +${previewTime(Math.ceil(granted))}`);
+  if (optional) summary.push(`Optional extra up to +${previewTime(optional)}`);
+  if (shared && filters.length) summary.push('Own time; access follows the group budget');
+  if (row.budget_mode === 'capped') summary.push('Group budget may block earlier');
+  return {base,usable,total,segments,filters,summary:summary.join(' · '),shared};
+}
+function createBudgetView(parent, group = false) {
+  parent.className += ' budget-cell';
+  const label = overviewNode('span','budget-text',parent);
+  const track = overviewNode(group ? 'progress':'div',group ? 'budget-progress':'overview-line',parent);
+  const status = overviewNode('span','budget-status',parent); status.hidden = true;
+  const note = overviewNode('small','overview-timeline-note',parent); note.hidden = group;
+  const view = {label,track,status,note,group};
+  if (!group) {
+    track.setAttribute('role','img');
+    view.bands = overviewNode('div','overview-bands',track); view.bands.setAttribute('aria-hidden','true');
+    view.used = overviewNode('span','overview-used',track); view.used.setAttribute('aria-hidden','true');
+    view.now = overviewNode('span','overview-now',track); view.now.setAttribute('aria-hidden','true');
+  }
+  return view;
+}
+function updateBudgetView(view,row,config,signature) {
+  const blocked = row.state === 'always_blocked', shared = !view.group && row.budget_mode === 'shared';
+  setHidden(view.label,blocked);
+  const label = shared ? `${duration(row.used_seconds)} used today` : `${duration(Math.max(0,Math.min(row.budget_seconds,row.remaining_seconds)))} left of ${duration(row.budget_seconds)}`;
+  setText(view.label,label);
+  const stateText = budgetStateLabels[row.state] || ''; setHidden(view.status,!stateText);
+  setText(view.status,stateText); setClass(view.status,'budget-status ' + row.state);
+  if (view.group) {
+    setHidden(view.track,blocked);
+    const seconds = Math.max(0,Math.min(row.budget_seconds,row.remaining_seconds));
+    if (view.track.max !== (row.budget_seconds || 1)) view.track.max = row.budget_seconds || 1;
+    if (Number(view.track.value) !== seconds) view.track.value = seconds;
+    setClass(view.track,'budget-progress ' + (row.state==='paused' ? 'paused' : seconds<=0 ? 'exhausted' : seconds/row.budget_seconds<=0.2 ? 'low':'available'));
+    setAttr(view.track,'aria-label',`Time remaining for ${row.user} on ${row.site}`); setAttr(view.track,'aria-valuetext',(stateText ? stateText+'. ' : '')+label);
+    return;
+  }
+  const rule = timelineConfig(row,config);
+  const key = JSON.stringify([signature || rule,row.budget_mode,row.extra_time_granted_seconds,row.extra_time_uses_remaining]);
+  if (view.signature !== key) {
+    view.signature = key; view.model = overviewTimelineModel(row,rule);
+    const m = view.model; view.bands.replaceChildren();
+    for (const segment of m.segments) {
+      const band = overviewNode('span','overview-band effect-'+segment.effect+(segment.optional ? ' overview-optional':''),view.bands);
+      band.style.width = ((segment.end-segment.start)/m.total*100)+'%';
     }
-    if (budgetStateLabels[row.state]) {
-      const status = document.createElement('span');
-      status.className = 'budget-status ' + row.state; status.textContent = budgetStateLabels[row.state]; remaining.append(status);
+    // Marker positions depend on settings, not live usage.
+    for (const marker of view.markers || []) marker.remove(); view.markers = [];
+    const mark = (at,kind,title) => {
+      const node = overviewNode('span','overview-threshold '+kind,view.track); node.setAttribute('aria-hidden','true');
+      node.style.left = (at/m.total*100)+'%'; node.title = title; view.markers.push(node);
+    };
+    if (m.total>0) {
+      for (const f of m.filters) if (f.at<=m.total) mark(f.at,'threshold-'+f.kind,`${f.name}: ${previewTime(f.at)}`);
+      if (!shared) mark(m.base,'threshold-limit',`Daily limit: ${previewTime(m.base)}`);
     }
+    setText(view.note,m.summary);
+  }
+  const m = view.model;
+  setHidden(view.track,blocked || m.total<=0); setHidden(view.note,blocked || !m.summary);
+  const used = Math.max(0,row.used_seconds || 0), percent = m.total>0 ? Math.min(100,used/m.total*100)+'%' : '0%';
+  setStyle(view.used,'width',percent); setStyle(view.now,'left',percent);
+  setAttr(view.track,'data-state',row.state);
+  const accessible = `${stateText ? stateText+'. ' : ''}${label}. Used: ${previewTime(Math.floor(used))}. ${m.summary}`;
+  setAttr(view.track,'aria-label',accessible); if (view.track.title !== accessible) view.track.title = accessible;
+}
+function renderGroupMembers(entry) {
+  if (!entry.details.open) return;
+  const wanted = [], alive = new Set();
+  for (const row of entry.rows) {
+    alive.add(row.site); let member = entry.members.get(row.site);
+    if (!member) {
+      const node = overviewNode('section','group-member');
+      member = {node,name:overviewNode('strong','',node),mode:overviewNode('small','',node),budget:createBudgetView(node)};
+      entry.members.set(row.site,member);
+    }
+    setText(member.name,row.site); setText(member.mode,budgetModeLabel(row.budget_mode));
+    const setting = entry.settings.get(row.site);
+    updateBudgetView(member.budget,row,setting?.rule,setting?.signature); wanted.push(member.node);
+  }
+  for (const [key,member] of entry.members) if (!alive.has(key)) {member.node.remove();entry.members.delete(key);}
+  reconcileNodes(entry.memberBody,wanted);
+}
+function drawOverview(d) {
+  setText(el('overview-date'),d.date); setAttr(el('overview-date'),'datetime',d.date);
+  setText(el('meta'),'Daily budgets for all configured users and sites.');
+  const settings = new Map(Object.entries(d.timeline_rules || {}).map(([site,rule]) => [site,{rule,signature:JSON.stringify(rule)}]));
+  const users = new Map();
+  const userBucket = user => {if (!users.has(user)) users.set(user,{groups:[],sites:[],members:new Map()});return users.get(user);};
+  for (const group of d.group_overview || []) userBucket(group.user).groups.push(group);
+  for (const row of d.overview) {
+    const bucket = userBucket(row.user);
+    if (row.group_id) {if (!bucket.members.has(row.group_id)) bucket.members.set(row.group_id,[]);bucket.members.get(row.group_id).push(row);}
+    else bucket.sites.push(row);
+  }
+  const wanted=[],alive=new Set();
+  for (const user of [...users.keys()].sort()) {
+    const bucket = users.get(user);
+    for (const group of bucket.groups) {
+      const key = JSON.stringify(['group',user,group.group_id]);alive.add(key);let entry=overviewEntries.get(key);
+      if (!entry) {
+        const node=overviewNode('tr','group-budget-row'),userCell=cell(node,user),name=cell(node,'');
+        const budget=createBudgetView(cell(node,''),true),detailRow=overviewNode('tr','group-detail-row'),td=cell(detailRow,'');td.colSpan=3;
+        const details=overviewNode('details','',td),summary=overviewNode('summary','',details),memberBody=overviewNode('div','group-members',details);
+        details.dataset.key=key;summary.dataset.groupSummary=key;
+        entry={node,userCell,name,budget,detailRow,details,summary,memberBody,members:new Map()};overviewEntries.set(key,entry);
+        details.addEventListener('toggle',()=>renderGroupMembers(entry));
+      }
+      entry.rows=bucket.members.get(group.group_id)||[];entry.settings=settings;
+      setText(entry.name,group.name);setText(entry.summary,`${entry.rows.length} site${entry.rows.length===1?'':'s'} in ${group.name}`);
+      setAttr(entry.summary,'aria-label',`Show sites in ${group.name} for ${user}`);
+      updateBudgetView(entry.budget,{...group,site:'group '+group.name});renderGroupMembers(entry);
+      wanted.push(entry.node,entry.detailRow);
+    }
+    for (const row of bucket.sites) {
+      const key=JSON.stringify(['site',user,row.site]);alive.add(key);let entry=overviewEntries.get(key);
+      if (!entry) {const node=overviewNode('tr','');cell(node,user);cell(node,row.site);entry={node,budget:createBudgetView(cell(node,''))};overviewEntries.set(key,entry);}
+      const setting=settings.get(row.site);updateBudgetView(entry.budget,row,setting?.rule,setting?.signature);wanted.push(entry.node);
+    }
+  }
+  if (!wanted.length) alive.add('empty');
+  for (const key of overviewEntries.keys()) if (!alive.has(key)) overviewEntries.delete(key);
+  if (!wanted.length) {
+    const key='empty';let entry=overviewEntries.get(key);
+    if (!entry) {const node=overviewNode('tr','');cell(node,'No sites configured. Add a site in Sites & limits to see its daily budget.').colSpan=3;entry={node};overviewEntries.set(key,entry);}
+    wanted.push(entry.node);
+  }
+  reconcileNodes(el('rows'),wanted);
 }
 function draftSnapshot() {
   return JSON.stringify(draftFields.map(id => el(id).type === 'checkbox' ? el(id).checked : el(id).value));
@@ -389,10 +492,46 @@ function setSiteBusy(busy) {
   siteBusy = busy; el('sites-user').disabled = busy || !el('sites-user').children.length; el('editor-fields').disabled = busy; el('site-form').setAttribute('aria-busy', String(busy));
   el('group-fields').disabled = busy; el('add-group').disabled = busy;
   el('add-site').disabled = el('logout').disabled = busy;
+  for (const id of ['download-config', 'import-config', 'config-file', 'save-bypass', 'bypass', 'reset']) el(id).disabled = busy;
   for (const b of el('sites').querySelectorAll('button')) b.disabled = busy;
   for (const b of el('groups').querySelectorAll('button')) b.disabled = busy;
   updateSiteRemaining();
 }
+el('download-config').onclick = async () => {
+  if (siteBusy) return;
+  setSiteBusy(true); el('config-error').textContent = '';
+  try {
+    const saved = await api('/api/sites');
+    const url = URL.createObjectURL(new Blob([JSON.stringify(saved, null, 2) + '\n'], {type: 'application/json'}));
+    const link = document.createElement('a'); link.href = url; link.download = 'pauseproxy-sites.json';
+    document.body.append(link);
+    try { link.click(); } finally { link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
+  } catch (error) { el('config-error').textContent = 'Could not download config: ' + error.message; }
+  finally { setSiteBusy(false); if (password) el('download-config').focus(); }
+};
+el('import-config').onclick = () => { if (!siteBusy) el('config-file').click(); };
+el('config-file').onchange = async () => {
+  const input = el('config-file'), file = input.files?.[0]; input.value = '';
+  if (siteBusy || !file) return;
+  setSiteBusy(true); el('config-error').textContent = ''; el('notice').textContent = '';
+  try {
+    if (file.size > 1024 * 1024) throw Error('Config must be at most 1 MiB.');
+    let contents;
+    try { contents = await file.text(); } catch { throw Error('Could not read the selected file.'); }
+    let imported;
+    try { imported = JSON.parse(contents); } catch { throw Error('The selected file is not valid JSON.'); }
+    if (!imported || typeof imported !== 'object' || Array.isArray(imported)) throw Error('Config must be a JSON object.');
+    if (!confirm('Replace all saved sites, groups and media exceptions in this instance with this config? This affects all users. Statistics will be kept.')) return;
+    if (!discardAllowed()) return;
+    if (el('bypass').value !== rules.bypass_domains.join('\n') && !confirm('Discard unsaved media exceptions?')) return;
+    const saved = await api('/api/sites', 'PUT', imported);
+    closeEditor(false); closeGroupEditor(false); applyRules(saved, true);
+    el('media-error').textContent = el('media-notice').textContent = '';
+    el('notice').textContent = 'Imported config. Refresh PAC using the Connection tab; restart the browser after changing media exceptions.';
+    try { await refresh(); } catch (error) { el('config-error').textContent = 'Config was imported, but refreshing statistics failed: ' + error.message; }
+  } catch (error) { el('config-error').textContent = error.message; }
+  finally { setSiteBusy(false); if (password) el('import-config').focus(); }
+};
 async function siteAction(s, method) {
   if (siteBusy) return;
   const affectsEditor = !el('site-editor').hidden && editing === s.domain;
@@ -510,7 +649,7 @@ el('login-form').onsubmit = async e => {
   try {
     await refreshRules(true); await refresh();
     el('password').value = ''; el('login').hidden = true; el('settings').hidden = false; el('logout').hidden = false; el('error').textContent = '';
-    polling = setInterval(() => refresh().catch(e => { el('overview-error').textContent = el('sites-live-error').textContent = e.message; stateUnavailable = true; updateSiteRemaining(); }), 2000);
+    polling = setInterval(() => {if (refreshPending) return; refresh().catch(e => { el('overview-error').textContent = el('sites-live-error').textContent = e.message; stateUnavailable = true; updateSiteRemaining(); });}, 2000);
   } catch (e) { signedOut(e.message); } finally { el('connect').disabled = false; }
 };
 el('logout').onclick = () => {
@@ -527,12 +666,21 @@ el('save-bypass').onclick = async () => {
   finally { setSiteBusy(false); el('save-bypass').disabled = false; }
 };
 el('reset').onclick = async () => {
+  if (siteBusy) return;
   if (!confirm('Reset all in-memory statistics? Saved rules will stay unchanged.')) return;
+  setSiteBusy(true);
   try { await api('/api/reset', 'POST', {}); await refresh(); } catch (e) { el('overview-error').textContent = e.message; }
+  finally { setSiteBusy(false); }
 };
-fetch('/connection').then(r => { if (!r.ok) throw Error('Could not load connection details'); return r.json(); }).then(c => {
+fetch('/connection', {cache: 'no-store'}).then(r => { if (!r.ok) throw Error('Could not load connection details'); return r.json(); }).then(c => {
   el('pac').textContent = c.pac; el('pac-link').href = c.pac; el('ca').href = c.ca; el('demo').href = c.demo;
-}).catch(e => el('connection-error').textContent = e.message);
+  el('ca-sha256').textContent = c.ca_sha256 || 'Unavailable';
+  el('ca-sha1').textContent = c.ca_sha1 || 'Unavailable';
+  if (c.ca_error) el('connection-error').textContent = c.ca_error;
+}).catch(e => {
+  el('ca-sha256').textContent = 'Unavailable'; el('ca-sha1').textContent = 'Unavailable';
+  el('connection-error').textContent = e.message;
+});
 function budgetModeLabel(mode) {
   return {shared: 'Shared budget', capped: 'Group + site cap', independent: 'Independent budget'}[mode] || 'Independent budget';
 }

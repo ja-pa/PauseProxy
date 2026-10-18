@@ -91,6 +91,10 @@ Removing or disabling a rule/domain stops tracking and removes the overlay. Stat
 
 List APIs accept up to 64 KiB of JSON; other APIs accept 4 KiB. Limits: 32 sites, 32 exact domains per site and 128 exceptions. New rules default to 900 seconds; POST can also atomically add a preset's `bypass_domains`. PATCH changes target domains, enabled state, mode and the limit in seconds; the primary identifier cannot be renamed.
 
+In **Sites & limits**, **Download config** downloads the current saved rules as `pauseproxy-sites.json`. It includes all site settings, groups and media exceptions, without users, statistics, passwords or connection settings. Unsaved editor changes are excluded. **Import config** accepts a JSON rules file up to 1 MiB (version 1 or 2) and, after confirmation, replaces the entire instance's sites, groups and exceptions. Rules are shared by all users; there is no user selection for import. Canceling or a failed import preserves the current settings and editor drafts. A successful import discards confirmed drafts and keeps statistics for matching site/group identifiers. Refresh PAC and restart the browser after changing media exceptions, as with manual edits. Invalid files or write failures leave the original rules intact.
+
+`PUT /api/sites` imports a complete rules document with the standard admin authentication and Host/Origin checks, accepts up to 1 MiB of JSON and returns the normalized version 2 document. It validates and saves the replacement atomically; empty lists intentionally remove all rules. `GET /api/sites` returns the same portable document used by Download config.
+
 ## Chrome and X
 
 1. Try the demo first. It needs no system changes.
@@ -174,6 +178,8 @@ Set a nonempty `admin_password` in the configuration before startup. The example
 
 Settings uses HTTP on the trusted LAN by default and requires no browser certificate. Import the public CA from `ca_dir/ca-cert.pem` or download it from `http://127.0.0.1:9082/ca-cert.pem` before browsing proxied HTTPS sites. Explicit HTTPS admin URLs remain supported for existing configurations. The password stays only in page memory; reloading or signing out requires signing in again.
 
+Connection settings and the setup guide display the current CA's SHA-256 fingerprint and Windows SHA-1 Thumbprint, with instructions for comparing a downloaded or installed certificate. These fingerprints hash the DER certificate, not the PEM file. A match identifies the same certificate but does not confirm installation or trust. For authenticity, obtain the expected fingerprint independently or view the page directly on the server.
+
 For a phone, set, for example, `admin_addr: "0.0.0.0:9083"` and `admin_url: "http://192.168.1.50:9083"`, using your PC's LAN IP. Add both phone and PC IPs to `users`. Use the exact `admin_url` on both devices. Allow firewall access to ports 9080, 9082 and 9083 only for the required devices. The `/howto#android` web guide contains a complete example and CA installation steps.
 
 Settings has Overview, Sites & limits, Media exceptions and Connection tabs. The countdown uses `m:ss` / `h:mm:ss`; a separate gear opens `admin_url/#sites`.
@@ -235,3 +241,11 @@ Rules, administration APIs and client status add `extra_time_method` (`click`, `
 Choose **Statistics for user** above the site table to view that user's live **Time remaining**. It uses the same effective site/group budget as Overview and refreshes every two seconds without replacing action buttons or the editor draft. The row's **Reset statistics** action resets today's used time, clicks, visits, bonus grants and bonus-use count only for the selected user and site. It cancels that user's sessions and pending challenges for the site; open pages reconnect automatically. Other users, sites, yesterday's counters and saved rules are unchanged. Already spent group time stays recorded, so resetting a shared/capped site cannot restore an exhausted group budget.
 
 `POST /api/sites/{domain}/reset` accepts JSON `{"user":"configured user name"}` with the standard admin authentication and Origin/Host checks. Unknown users/sites are rejected. Reset affects only in-memory state and settles active usage before clearing the selected counters.
+
+## Overview timelines
+
+Overview uses a compact timeline for each site: blue for normal browsing, gray for grayscale, purple for blur and dark purple for both. A vertical marker shows today's site usage and the faded part marks spent time. The base limit is marked separately. Granted bonus time is usable; remaining possible extensions form a dashed section. Potential bonus equals the current extension length multiplied by remaining uses, so changing bonus settings does not rewrite already granted time. The text above the timeline still shows the effective remaining budget, including group constraints. Shared sites show only their own usage and filter thresholds (no blocking endpoint); after the last threshold the marker stays at the end while the text reports actual usage. A shared site without filters needs no extra timeline. Group totals retain a simple remaining-budget bar.
+
+`/api/state` includes `timeline_rules`, keyed by site with its base budget, grayscale/blur settings and extra-time settings. Each overview row adds `extra_time_granted_seconds` and `extra_time_uses_remaining`. These fields are captured under the same store lock as usage; no accounting or rule format changes are involved.
+
+The browser reuses rows and timeline elements by user/site or user/group keys. Usage changes update text and marker/mask positions; segments are rebuilt only for settings or bonus changes. Closed groups keep the latest data and create member elements on first expansion. Updates preserve expanded state and keyboard focus. One two-second poll is shared with Sites & limits, and concurrent refresh calls share one in-flight request. There are no per-row clocks or animation loops.
