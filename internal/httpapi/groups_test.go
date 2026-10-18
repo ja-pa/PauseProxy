@@ -73,7 +73,8 @@ func TestGroupAPIAndSiteModes(t *testing.T) {
 	}{
 		{"", c.AdminAddr, "127.0.0.1:1234", "application/json", 401},
 		{"test-only", "evil.example", "127.0.0.1:1234", "application/json", 403},
-		{"test-only", c.AdminAddr, "192.0.2.5:1234", "application/json", 403},
+		{"test-only", c.AdminAddr, "192.0.2.5:1234", "application/json", 200},
+		{"", c.AdminAddr, "192.0.2.5:1234", "application/json", 401},
 		{"test-only", c.AdminAddr, "127.0.0.1:1234", "text/plain", 415},
 	} {
 		r := httptest.NewRequest("POST", "https://"+tc.host+"/api/groups", strings.NewReader(`{"name":"News","daily_limit_seconds":900}`))

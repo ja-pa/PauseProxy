@@ -24,7 +24,11 @@ func TestLocalStyles(t *testing.T) {
 				r.RemoteAddr = "192.0.2.1:1234"
 				w = httptest.NewRecorder()
 				handler(w, r)
-				if w.Code != http.StatusForbidden {
+				want := http.StatusForbidden
+				if name == "admin" {
+					want = http.StatusOK
+				}
+				if w.Code != want {
 					t.Fatalf("unknown device got %d", w.Code)
 				}
 			})

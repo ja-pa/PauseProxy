@@ -40,7 +40,33 @@ func run() error {
 	fs := flag.NewFlagSet("pauseproxy", flag.ContinueOnError)
 	path := fs.String("config", "", "read-only JSON config (optional)")
 	caDir := fs.String("ca-dir", "", "override CA directory")
+	fs.Usage = func() {
+		fmt.Fprint(fs.Output(), `Usage:
+  pauseproxy [options]
+  pauseproxy bootstrap-ca [options]
+
+Commands:
+  (default)     Run the proxy using the existing CA.
+  bootstrap-ca  Create a CA once, before the first start. Refuses to overwrite
+                an existing CA directory. Do not repeat on upgrades.
+
+First setup on OpenWrt:
+  pauseproxy bootstrap-ca --config /etc/pauseproxy/config.json
+  pauseproxy --config /etc/pauseproxy/config.json
+
+Import only ca-cert.pem from ca_dir into your browser's trusted authorities.
+Keep ca-key.pem private. Preserve both files and ca_dir across upgrades so
+clients keep trusting the same CA. Restore an existing CA instead of generating
+a new one if you already imported its certificate.
+
+Options:
+`)
+		fs.PrintDefaults()
+	}
 	if e := fs.Parse(args); e != nil {
+		if errors.Is(e, flag.ErrHelp) {
+			return nil
+		}
 		return e
 	}
 	if fs.NArg() != 0 {

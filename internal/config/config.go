@@ -34,7 +34,7 @@ type Config struct {
 }
 
 func Default() Config {
-	return Config{AdminURL: "https://127.0.0.1:9083", ProxyAddr: "127.0.0.1:9080", PACAddr: "127.0.0.1:9082", AdminAddr: "127.0.0.1:9083", AdvertisedProxy: "127.0.0.1:9080", CADir: ".local/ca", SitesFile: ".local/sites.json", Timezone: "Europe/Prague", Hosts: []string{"x.com"}, Users: map[string]string{"127.0.0.1": "dev", "::1": "dev"}, DailyLimit: 120, Warning: 30}
+	return Config{AdminURL: "http://127.0.0.1:9083", ProxyAddr: "127.0.0.1:9080", PACAddr: "127.0.0.1:9082", AdminAddr: "127.0.0.1:9083", AdvertisedProxy: "127.0.0.1:9080", CADir: ".local/ca", SitesFile: ".local/sites.json", Timezone: "Europe/Prague", Hosts: []string{"x.com"}, Users: map[string]string{"127.0.0.1": "dev", "::1": "dev"}, DailyLimit: 120, Warning: 30}
 }
 func Load(path string) (Config, error) {
 	c := Default()

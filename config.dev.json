@@ -16,6 +16,6 @@
   "daily_limit_seconds": 120,
   "warning_seconds": 30,
   "blocked_hours": [],
-  "admin_url": "https://127.0.0.1:9083",
+  "admin_url": "http://127.0.0.1:9083",
   "admin_password": ""
 }

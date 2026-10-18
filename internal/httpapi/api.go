@@ -276,6 +276,11 @@ func (a *API) PAC() string {
 func (a *API) Public(w http.ResponseWriter, r *http.Request) {
 	user, ip := a.Config.User(r.RemoteAddr)
 	if user == "" {
+		if r.Method == http.MethodGet && (r.URL.Path == "/" || r.URL.Path == "/demo" || r.URL.Path == "/howto") {
+			w.Header().Set("Cache-Control", "no-store")
+			http.Redirect(w, r, a.Config.AdminURL, http.StatusSeeOther)
+			return
+		}
 		Error(w, 403, "unknown device")
 		return
 	}
@@ -321,10 +326,8 @@ func (a *API) Admin(w http.ResponseWriter, r *http.Request) {
 		Error(w, 403, "host/origin denied")
 		return
 	}
-	if user, _ := a.Config.User(r.RemoteAddr); user == "" {
-		Error(w, 403, "unknown device")
-		return
-	}
+	// Proxy users and administrators are independent: a new device must be able
+	// to open the login page. Admin APIs still require the configured password.
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	if r.Method == "GET" && (r.URL.Path == "/mvp.css" || r.URL.Path == "/app.css") {

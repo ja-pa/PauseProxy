@@ -58,7 +58,7 @@ for key in ('proxy_addr', 'pac_addr', 'admin_addr'):
     authority = ('[' + host + ']' if ':' in host else host) + ':' + str(u.port)
     print(host)
     print(u.port)
-    print(c.get('admin_url', 'https://' + authority) if key == 'admin_addr' else 'http://' + authority)
+    print(c.get('admin_url', 'http://' + authority) if key == 'admin_addr' else 'http://' + authority)
 ca = c.get('ca_dir', '.local/ca')
 if not isinstance(ca, str) or not ca or '\n' in ca or '\r' in ca:
     raise ValueError('Invalid ca_dir')
@@ -178,5 +178,5 @@ for ((i=0; i<40; i++)); do
   sleep 0.25
 done
 $ready || fail 'HTTP servers are unavailable. Check the addresses and users in the configuration.'
-printf '\nReady. Open in your Windows browser:\n  Guide:    %s/howto\n  Settings: %s\n  Demo:     %s/demo\n  PAC:      %s/proxy.pac\n\nSettings uses admin_password from the configuration. Import the public CA before opening HTTPS settings. Stop: Ctrl+C. Statistics remain only in RAM.\n' "$admin_url" "$admin_url" "$pac_url" "$pac_url"
+printf '\nReady. Open in your Windows browser:\n  Guide:    %s/howto\n  Settings: %s\n  Demo:     %s/demo\n  PAC:      %s/proxy.pac\n\nSettings uses admin_password from the configuration. Default HTTP settings needs no browser certificate; import the CA for proxied HTTPS sites. Stop: Ctrl+C. Statistics remain only in RAM.\n' "$admin_url" "$admin_url" "$pac_url" "$pac_url"
 wait "$app_pid"

@@ -113,7 +113,7 @@ func TestHowtoIsPublicButHostAndOriginRemainProtected(t *testing.T) {
 		want                 int
 	}{
 		{c.AdminAddr, "", "GET", 200},
-		{c.AdminAddr, "https://" + c.AdminAddr, "GET", 200},
+		{c.AdminAddr, c.AdminURL, "GET", 200},
 		{"evil.example", "", "GET", 403},
 		{c.AdminAddr, "https://evil.example", "GET", 403},
 		{c.AdminAddr, "", "POST", 401},
@@ -163,7 +163,10 @@ func TestAdminLANAuthentication(t *testing.T) {
 		{"192.168.1.60", "Bearer wrong", c.AdminURL, 401},
 		{"192.168.1.60", "", c.AdminURL, 401},
 		{"192.168.1.60", "private-password", c.AdminURL, 401},
-		{"192.168.1.61", "Bearer private-password", c.AdminURL, 403},
+		{"192.168.1.61", "Bearer private-password", c.AdminURL, 200},
+		{"192.168.1.61", "Bearer wrong", c.AdminURL, 401},
+		{"192.168.1.61", "", c.AdminURL, 401},
+		{"192.168.1.61", "Bearer private-password", "https://evil.example", 403},
 		{"192.168.1.60", "Bearer private-password", "https://192.168.1.50:9083", 403},
 	} {
 		r := httptest.NewRequest("GET", c.AdminURL+"/api/state", nil)

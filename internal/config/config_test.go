@@ -38,6 +38,9 @@ func TestExactHosts(t *testing.T) {
 
 func TestAdminConfiguration(t *testing.T) {
 	c := Default()
+	if c.AdminURL != "http://127.0.0.1:9083" {
+		t.Fatalf("default settings must use HTTP on trusted LAN: %s", c.AdminURL)
+	}
 	if c.ValidateRun() == nil {
 		t.Fatal("missing password accepted")
 	}
